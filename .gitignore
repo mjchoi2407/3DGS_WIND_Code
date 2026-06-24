@@ -1,0 +1,22 @@
+# Python environments
+.venv/
+venv/
+env/
+.env/
+venv/
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Generated code-area data
+datasets/*
+!datasets/.gitkeep
+outputs/*
+!outputs/.gitkeep
+
+# Local editor and OS noise
+.DS_Store
+Thumbs.db
