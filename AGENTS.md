@@ -34,6 +34,15 @@ At the start of every meaningful task:
 4. If the task depends on research direction or milestones, check `../ideas/idea_sketch.tex` and `../ideas/implementation_checklist.md`.
 5. If the task depends on an experiment, check the active README under `../experiments/`.
 
+## 새 채팅 초기화 규칙
+
+대화 이력이 비어 있는 새 Codex 채팅에서 첫 의미 있는 작업을 시작할 때만 다음 초기화를 수행한다. 같은 대화 중간이나 이미 맥락을 확인한 뒤에는 반복하지 않는다.
+
+1. 이 repo가 Wind3DGS 프로젝트의 code-side repo임을 확인한다. 특히 전체 연구 테마가 `CG + AI research on wind-driven deformable 3D Gaussian Splatting`임을 확인한다.
+2. 현재 날짜 기준 최근 3일의 session 기록을 확인한다. 우선 `sessions/`를 보고, 작업이 연구 방향이나 실험과 연결되면 `../ideas/sessions/`, `../experiments/sessions/`도 날짜와 번호 순서대로 훑는다.
+3. 최근 3일 안에 session 기록이 없거나 작업 맥락이 부족하면, 관련 session 폴더에서 가장 최근 날짜의 기록을 추가로 확인한다.
+4. 확인한 연구 테마, 최근 작업 흐름, 현재 code-side 작업 범위를 짧게 내부 정리한 뒤 일반 Startup Protocol을 이어간다.
+
 ## Working Loop
 
 1. Implement reusable modules under `wind3dgs/`.
