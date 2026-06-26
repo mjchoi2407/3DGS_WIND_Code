@@ -3,7 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SIBR_INSTALL_DIR="$ROOT_DIR/external/graphdeco-gaussian-splatting/SIBR_viewers/install"
-SIBR_CONDA_ENV="$ROOT_DIR/external/miniforge3/envs/sibr"
+DEFAULT_SIBR_CONDA_ENV="$HOME/conda-envs/wind3dgs/sibr"
+LEGACY_SIBR_CONDA_ENV="$ROOT_DIR/external/miniforge3/envs/sibr"
+SIBR_CONDA_ENV="${SIBR_CONDA_ENV:-$DEFAULT_SIBR_CONDA_ENV}"
 VIEWER_BIN="$SIBR_INSTALL_DIR/bin/SIBR_gaussianViewer_app"
 
 DEFAULT_MODEL="$ROOT_DIR/experiments/M04_mesh_extraction/models/gof_playroom_i1000_r8"
@@ -19,14 +21,25 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   echo "Default source:    $DEFAULT_SOURCE"
   echo "Default iteration: $DEFAULT_ITERATION"
   echo "Default rendering: ${DEFAULT_RENDER_WIDTH}x${DEFAULT_RENDER_HEIGHT}"
+  echo "SIBR env:          $SIBR_CONDA_ENV"
   echo
-  echo "Environment overrides: SIBR_DEFAULT_ITERATION, SIBR_RENDER_WIDTH, SIBR_RENDER_HEIGHT"
+  echo "Environment overrides: SIBR_CONDA_ENV, SIBR_DEFAULT_ITERATION, SIBR_RENDER_WIDTH, SIBR_RENDER_HEIGHT"
   exit 0
 fi
 
 if [[ ! -x "$VIEWER_BIN" ]]; then
   echo "SIBR viewer binary not found: $VIEWER_BIN" >&2
-  echo "Build it first with: external/miniforge3/bin/conda run -n sibr cmake --build external/graphdeco-gaussian-splatting/SIBR_viewers/build-conda4 --target install -j4" >&2
+  echo "Build it first in the restored sibr environment, then run this script again." >&2
+  exit 1
+fi
+
+if [[ ! -d "$SIBR_CONDA_ENV/lib" && -d "$LEGACY_SIBR_CONDA_ENV/lib" ]]; then
+  SIBR_CONDA_ENV="$LEGACY_SIBR_CONDA_ENV"
+fi
+
+if [[ ! -d "$SIBR_CONDA_ENV/lib" ]]; then
+  echo "SIBR conda environment lib directory not found: $SIBR_CONDA_ENV/lib" >&2
+  echo "Set SIBR_CONDA_ENV to the restored sibr environment path." >&2
   exit 1
 fi
 
