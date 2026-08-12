@@ -18,21 +18,20 @@ Project tag for conversation/session tracking: `Wind3DGS`.
 Sibling work folders:
 
 - `../code`: reusable implementation, configs, scripts, dependencies, and code-side session notes
-- `../ideas`: idea sketches, checklists, bibliography, research direction changelog, and idea-side session notes
+- `../ideas`: canonical research index, current sketch, checklist, bibliography, archived prior ideas, and idea-side session notes
 - `../experiments`: experiment READMEs, assets, outputs, reports, wrappers, and experiment-side session notes
 
 ## Startup Protocol
 
 At the start of every meaningful task:
 
-1. Read `../RESEARCH_PROJECT_GUIDE.md` if available from the workspace root.
-2. Read this `AGENTS.md`.
-3. Check local code-side records:
+1. Read `../AGENTS.md`, `../README.md`, and this `AGENTS.md`.
+2. Check local code-side records:
    - `README.md`
    - `requirements.txt`
    - `sessions/README.md`
-4. If the task depends on research direction or milestones, check `../ideas/idea_sketch.tex` and `../ideas/implementation_checklist.md`.
-5. If the task depends on an experiment, check the active README under `../experiments/`.
+3. If the task depends on research direction or milestones, read `../ideas/README.md` and the current documents indexed there.
+4. If the task depends on an experiment, check the active README under `../experiments/`.
 
 ## 새 채팅 초기화 규칙
 
@@ -47,7 +46,7 @@ At the start of every meaningful task:
 
 1. Implement reusable modules under `wind3dgs/`.
 2. Keep experiment-specific wrappers, outputs, and reports under `../experiments/`.
-3. Keep research framing, checklist, bibliography, and changelog under `../ideas/`.
+3. Keep research framing, checklist, bibliography, and prior-direction archives under `../ideas/`.
 4. Record code-side work history in `sessions/`.
 
 ## Editing Rules
@@ -60,7 +59,7 @@ At the start of every meaningful task:
 
 ## Session Tracking
 
-- Start substantial new conversations with a prefix like `[Wind3DGS | code]` or `[Wind3DGS | code | M03]`.
+- Start substantial new conversations with a prefix like `[Wind3DGS | code]` or `[Wind3DGS | code | TD00]`.
 - At the end of meaningful code work, create or update a note under `sessions/`.
 - Name new session notes as `YYYY-MM-DD_NN_short_topic.md`, where `NN` is the next two-digit sequence for that date inside `code/sessions/`.
 - Keep numbering independent from `../ideas/sessions/` and `../experiments/sessions/`.

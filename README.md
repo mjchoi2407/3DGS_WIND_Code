@@ -18,9 +18,9 @@ new reusable implementation should live under `wind3dgs/`.
 From this `code/` repository root:
 
 ```bash
-PYTHONPATH=. .venv/bin/python -m wind3dgs.m02_mesh_proxy_binding.viewer_gpu --smoke-test --cells 50
-PYTHONPATH=. .venv/bin/python -m wind3dgs.m02_mesh_proxy_binding.viewer_gpu --smoke-test --cells 50 --deformation wind
-PYTHONPATH=. .venv/bin/python -m wind3dgs.m03_procedural_wind.render_wind_preview --cells 50 --preset all
+PYTHONPATH=. ../.venv/bin/python -m wind3dgs.m02_mesh_proxy_binding.viewer_gpu --smoke-test --cells 50
+PYTHONPATH=. ../.venv/bin/python -m wind3dgs.m02_mesh_proxy_binding.viewer_gpu --smoke-test --cells 50 --deformation wind
+PYTHONPATH=. ../.venv/bin/python -m wind3dgs.m03_procedural_wind.render_wind_preview --cells 50 --preset all
 ```
 
 Experiment wrappers and generated outputs live in `../experiments/`.
