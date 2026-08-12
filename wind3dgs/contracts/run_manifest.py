@@ -136,8 +136,8 @@ def validate_run_manifest(payload: dict[str, Any]) -> None:
     command = payload["command"]
     if not isinstance(command, list) or not command or not all(isinstance(item, str) and item for item in command):
         raise ContractError("command must be a non-empty string list")
-    if "--config" not in command:
-        raise ContractError("command must include --config")
+    if command.count("--config") != 1:
+        raise ContractError("command must include exactly one --config")
     config_argument_index = command.index("--config") + 1
     if config_argument_index >= len(command) or command[config_argument_index] != payload["config_path"]:
         raise ContractError("command --config value must match config_path")

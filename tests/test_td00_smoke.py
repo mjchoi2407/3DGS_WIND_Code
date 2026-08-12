@@ -437,6 +437,71 @@ class Td00SmokeTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, "dirty"):
             validate_td00_manifest_semantics(manifest)
 
+    def test_td00_manifest_semantics_rejects_extra_output_and_argument(self) -> None:
+        manifest = {
+            "milestone": "TD00",
+            "source_repositories": [
+                {"id": key, "relative_path": value, "dirty": False}
+                for key, value in {
+                    "project": ".",
+                    "code": "code",
+                    "ideas": "ideas",
+                    "experiments": "experiments",
+                }.items()
+            ],
+            "device": {"requested": "cpu", "resolved": "cpu", "class": "cpu-contract-smoke"},
+            "working_directory": ".",
+            "environment": {"PYTHONPATH": "code"},
+            "command": [
+                ".venv/bin/python",
+                "-m",
+                "wind3dgs.runtime.td00_smoke",
+                "--config",
+                "code/configs/td00_contracts_smoke.json",
+            ],
+            "config_path": "code/configs/td00_contracts_smoke.json",
+            "outputs": [
+                {
+                    "id": "td00_smoke_report",
+                    "path": "td00_smoke_report.json",
+                    "sha256": "a" * 64,
+                    "size_bytes": 1,
+                }
+            ],
+        }
+        extra_output = dict(manifest)
+        extra_output["outputs"] = [
+            *manifest["outputs"],
+            {"id": "ghost", "path": "ghost.json", "sha256": "b" * 64, "size_bytes": 1},
+        ]
+        with self.assertRaisesRegex(ContractError, "output 하나"):
+            validate_td00_manifest_semantics(extra_output)
+
+        duplicate_argument = dict(manifest)
+        duplicate_argument["command"] = [
+            *manifest["command"],
+            "--config",
+            manifest["config_path"],
+        ]
+        with self.assertRaisesRegex(ContractError, "argument 형태"):
+            validate_td00_manifest_semantics(duplicate_argument)
+
+    def test_publication_privacy_scan_rejects_embedded_platform_paths(self) -> None:
+        from wind3dgs.runtime.td00_smoke import _assert_no_private_or_absolute_strings
+
+        for value in (
+            "trace at /home/user/project/run.json",
+            r"trace at C:\Users\user\run.json",
+            r"trace at \\server\share\run.json",
+            "trace at ~/private/run.json",
+        ):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ContractError, "absolute/private"
+            ):
+                _assert_no_private_or_absolute_strings({"trace": value})
+
+        _assert_no_private_or_absolute_strings({"schema": "https://example.invalid/schema/v1"})
+
 
 if __name__ == "__main__":
     unittest.main()

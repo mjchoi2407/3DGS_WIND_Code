@@ -90,6 +90,11 @@ TD00_NOT_EVALUATED = {
     "json_schema_python_parity": "TD01 packaging/interop",
 }
 TD00_SCOPE = "governance, packaging, provenance, contract wiring만 검증"
+_UNIX_ABSOLUTE_PATH_RE = re.compile(r"(?:^|[\s'\"(=:])/(?!/)[^\s'\"),;]+")
+_WINDOWS_ABSOLUTE_PATH_RE = re.compile(
+    r"(?:^|[\s'\"(=:])(?:[A-Za-z]:[\\/]|\\\\[^\\/\s]+[\\/])"
+)
+_HOME_RELATIVE_PATH_RE = re.compile(r"(?:^|[\s'\"(=:])~(?:[\\/]|$)")
 
 
 def validate_td00_config(config: dict[str, Any]) -> None:
@@ -363,7 +368,11 @@ def _assert_no_private_or_absolute_strings(payload: Any, path: str = "root") -> 
         for index, value in enumerate(payload):
             _assert_no_private_or_absolute_strings(value, f"{path}[{index}]")
     elif isinstance(payload, str):
-        if payload.startswith("/") or payload.startswith("~"):
+        if (
+            _UNIX_ABSOLUTE_PATH_RE.search(payload)
+            or _WINDOWS_ABSOLUTE_PATH_RE.search(payload)
+            or _HOME_RELATIVE_PATH_RE.search(payload)
+        ):
             raise ContractError(f"publication에 absolute/private path가 있습니다: {path}")
 
 
@@ -614,11 +623,30 @@ def validate_td00_manifest_semantics(manifest: dict[str, Any]) -> None:
         raise ContractError("TD00 evidence는 CPU contract-smoke device를 사용해야 합니다")
     if manifest.get("working_directory") != "." or manifest.get("environment") != {"PYTHONPATH": "code"}:
         raise ContractError("TD00 evidence의 working directory 또는 environment가 canonical하지 않습니다")
+    canonical_config = "code/configs/td00_contracts_smoke.json"
     command = manifest.get("command", [])
-    if command[:3] != [".venv/bin/python", "-m", "wind3dgs.runtime.td00_smoke"]:
-        raise ContractError("TD00 evidence command가 canonical project interpreter/module을 사용하지 않습니다")
-    if manifest.get("config_path") != "code/configs/td00_contracts_smoke.json":
+    base_command = _stable_command(canonical_config, None)
+    command_is_canonical = command == base_command
+    if len(command) == len(base_command) + 2 and command[: len(base_command)] == base_command:
+        publish_path = PurePosixPath(command[-1])
+        command_is_canonical = (
+            command[-2] == "--publish-dir"
+            and not publish_path.is_absolute()
+            and ".." not in publish_path.parts
+            and publish_path.parts[:3] == ("experiments", "TD00_contracts", "reports")
+            and len(publish_path.parts) > 3
+        )
+    if not command_is_canonical:
+        raise ContractError("TD00 evidence command가 canonical argument 형태와 정확히 일치하지 않습니다")
+    if manifest.get("config_path") != canonical_config:
         raise ContractError("TD00 evidence는 canonical smoke config를 사용해야 합니다")
+    outputs = manifest.get("outputs", [])
+    if (
+        len(outputs) != 1
+        or outputs[0].get("id") != "td00_smoke_report"
+        or outputs[0].get("path") != "td00_smoke_report.json"
+    ):
+        raise ContractError("TD00 evidence manifest는 smoke report output 하나만 기록해야 합니다")
 
 
 def verify_td00_evidence_directory(

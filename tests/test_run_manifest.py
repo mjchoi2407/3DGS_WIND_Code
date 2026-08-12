@@ -134,6 +134,15 @@ class RunManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(ContractError, "nonnegative integer"):
                 validate_run_manifest(manifest)
 
+    def test_duplicate_config_argument_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / "report.json"
+            report.write_text("{}\n", encoding="utf-8")
+            manifest = finalized_manifest(report)
+            manifest["command"].extend(("--config", manifest["config_path"]))
+            with self.assertRaisesRegex(ContractError, "exactly one --config"):
+                validate_run_manifest(manifest)
+
     def test_symlink_output_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
