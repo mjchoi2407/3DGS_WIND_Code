@@ -1,0 +1,8 @@
+# 2026-08-13 root .venv legacy viewer snapshot이다.
+# TD core가 아니라 M01--M03 호환 경로를 위해 보존한다.
+glcontext==3.0.0
+glfw==2.10.0
+gsplat==1.5.3
+moderngl==5.12.0
+numpy==2.4.4
+Pillow==12.1.1

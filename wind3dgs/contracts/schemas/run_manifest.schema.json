@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wind3dgs.local/schemas/run_manifest.schema.json",
+  "title": "Wind3DGS run manifest",
+  "description": "구조적 interchange schema입니다. 조건부 milestone 규칙과 reproducibility key는 wind3dgs.contracts.validate_run_manifest가 기준입니다.",
+  "x-wind3dgs-normative-validator": "wind3dgs.contracts.validate_run_manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "milestone",
+    "created_at",
+    "source_repositories",
+    "command",
+    "working_directory",
+    "environment",
+    "config_path",
+    "config_sha256",
+    "seed",
+    "device",
+    "dataset_id",
+    "dataset_sha256_or_manifest_version",
+    "object_package_id",
+    "object_package_sha256",
+    "models",
+    "outputs",
+    "software",
+    "reproducibility_key"
+  ],
+  "properties": {
+    "schema_version": {"const": "wind3dgs.run_manifest.v1"},
+    "run_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"},
+    "milestone": {"type": "string", "pattern": "^TD[0-9]{2}$"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "source_repositories": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "relative_path", "commit", "dirty"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "relative_path": {"type": "string", "minLength": 1},
+          "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "dirty": {"type": "boolean"}
+        }
+      }
+    },
+    "command": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "working_directory": {"type": "string", "pattern": "^(?:\\.|(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+)$"},
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "PYTHONPATH": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"}
+      }
+    },
+    "config_path": {"type": "string", "minLength": 1},
+    "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "seed": {"type": "integer", "minimum": 0},
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "resolved", "class"],
+      "properties": {
+        "requested": {"type": "string", "minLength": 1},
+        "resolved": {"type": "string", "minLength": 1},
+        "class": {"type": "string", "minLength": 1}
+      }
+    },
+    "dataset_id": {"type": "string", "minLength": 1},
+    "dataset_sha256_or_manifest_version": {"type": "string", "minLength": 1},
+    "object_package_id": {"type": "string", "minLength": 1},
+    "object_package_sha256": {
+      "oneOf": [
+        {"const": "not_applicable:td00_governance_smoke"},
+        {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      ]
+    },
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "sha256"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "path", "sha256", "size_bytes"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "size_bytes": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "software": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["python", "numpy", "platform"],
+      "properties": {
+        "python": {"type": "string", "minLength": 1},
+        "numpy": {"type": "string", "minLength": 1},
+        "platform": {"type": "string", "minLength": 1}
+      }
+    },
+    "reproducibility_key": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

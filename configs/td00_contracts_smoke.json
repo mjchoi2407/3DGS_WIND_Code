@@ -1,0 +1,35 @@
+{
+  "schema_version": "wind3dgs.td00_smoke_config.v1",
+  "milestone": "TD00",
+  "experiment_id": "TD00_contracts",
+  "seed": 20260813,
+  "device": "cpu",
+  "require_clean_sources": true,
+  "inherit_legacy_completion": false,
+  "artifact_run_root": "experiments/artifacts/runs",
+  "source_repositories": [
+    {"id": "project", "relative_path": "."},
+    {"id": "code", "relative_path": "code"},
+    {"id": "ideas", "relative_path": "ideas"},
+    {"id": "experiments", "relative_path": "experiments"}
+  ],
+  "dataset_id": "not_applicable:td00_governance_smoke",
+  "dataset_sha256_or_manifest_version": "manifest:manifests/datasets.json@1.0.0",
+  "object_package_id": "not_applicable:td00_governance_smoke",
+  "object_package_sha256": "not_applicable:td00_governance_smoke",
+  "models": [],
+  "expected_stage_order": [1, 2, 3, 4, 5, 6, 7, 10, 9, 8, 11, 12, 13, 14],
+  "mainline_packages": [
+    "contracts",
+    "io",
+    "teacher",
+    "topology",
+    "aero",
+    "reduced",
+    "local",
+    "learning",
+    "runtime",
+    "transport"
+  ],
+  "publication_max_file_bytes": 1048576
+}

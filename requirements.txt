@@ -1,6 +1,3 @@
-glcontext==3.0.0
-glfw==2.10.0
-gsplat==1.5.3
-moderngl==5.12.0
-numpy==2.4.4
-Pillow==12.1.1
+# 보존된 Python 3.12 legacy viewer 환경용 호환 진입점이다.
+# 새 TD dependency와 optional group의 기준은 pyproject.toml이다.
+-r requirements/legacy-viewer-py312.txt
