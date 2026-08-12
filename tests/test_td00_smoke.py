@@ -491,7 +491,10 @@ class Td00SmokeTests(unittest.TestCase):
 
         for value in (
             "trace at /home/user/project/run.json",
+            "trace at `/home/user/project/run.json`",
+            "trace at [/home/user/project/run.json]",
             r"trace at C:\Users\user\run.json",
+            r"trace at `C:\Users\user\run.json`",
             r"trace at \\server\share\run.json",
             "trace at ~/private/run.json",
         ):
@@ -499,6 +502,9 @@ class Td00SmokeTests(unittest.TestCase):
                 ContractError, "absolute/private"
             ):
                 _assert_no_private_or_absolute_strings({"trace": value})
+
+        with self.assertRaisesRegex(ContractError, "absolute/private"):
+            _assert_no_private_or_absolute_strings({"/home/user/private.txt": True})
 
         _assert_no_private_or_absolute_strings({"schema": "https://example.invalid/schema/v1"})
 

@@ -90,11 +90,11 @@ TD00_NOT_EVALUATED = {
     "json_schema_python_parity": "TD01 packaging/interop",
 }
 TD00_SCOPE = "governance, packaging, provenance, contract wiring만 검증"
-_UNIX_ABSOLUTE_PATH_RE = re.compile(r"(?:^|[\s'\"(=:])/(?!/)[^\s'\"),;]+")
+_UNIX_ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9/\\])/(?!/)[^\s'\"`\]),;]+")
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(
-    r"(?:^|[\s'\"(=:])(?:[A-Za-z]:[\\/]|\\\\[^\\/\s]+[\\/])"
+    r"(?<![A-Za-z0-9/\\])(?:[A-Za-z]:[\\/]|\\\\[^\\/\s]+[\\/])"
 )
-_HOME_RELATIVE_PATH_RE = re.compile(r"(?:^|[\s'\"(=:])~(?:[\\/]|$)")
+_HOME_RELATIVE_PATH_RE = re.compile(r"(?<![A-Za-z0-9/\\])~(?:[\\/]|$)")
 
 
 def validate_td00_config(config: dict[str, Any]) -> None:
@@ -361,8 +361,10 @@ def _assert_no_private_or_absolute_strings(payload: Any, path: str = "root") -> 
     }
     if isinstance(payload, dict):
         for key, value in payload.items():
-            if str(key).lower() in secret_keys:
+            key_text = str(key)
+            if key_text.lower() in secret_keys:
                 raise ContractError(f"publication에 secret-like key가 있습니다: {path}.{key}")
+            _assert_no_private_or_absolute_strings(key_text, f"{path}.<key>")
             _assert_no_private_or_absolute_strings(value, f"{path}.{key}")
     elif isinstance(payload, list):
         for index, value in enumerate(payload):
