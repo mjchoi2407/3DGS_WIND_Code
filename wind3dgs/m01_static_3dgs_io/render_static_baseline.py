@@ -4,9 +4,7 @@
 from __future__ import annotations
 
 import argparse
-import io
 import json
-import math
 import shutil
 from pathlib import Path
 from typing import Any
@@ -14,172 +12,27 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageDraw
 
+from wind3dgs.io import (
+    build_gaussian_arrays,
+    camera_tensors,
+    load_cameras,
+    load_ply_properties,
+    parse_ply_header,
+)
+from wind3dgs.io.gaussian_ply import (  # noqa: F401 - legacy symbol compatibility
+    PLY_DTYPE_MAP,
+    SH_C0,
+    normalize,
+    numeric_suffix,
+    required,
+    sigmoid,
+)
+
 
 ROOT = Path(__file__).resolve().parents[3] / "experiments" / "M01_static_3dgs_io"
 ASSET_DIR = ROOT / "assets"
 CAMERA_DIR = ROOT / "cameras"
 OUTPUT_DIR = ROOT / "outputs"
-SH_C0 = 0.28209479177387814
-
-
-PLY_DTYPE_MAP = {
-    "char": "i1",
-    "uchar": "u1",
-    "int8": "i1",
-    "uint8": "u1",
-    "short": "<i2",
-    "ushort": "<u2",
-    "int16": "<i2",
-    "uint16": "<u2",
-    "int": "<i4",
-    "uint": "<u4",
-    "int32": "<i4",
-    "uint32": "<u4",
-    "float": "<f4",
-    "float32": "<f4",
-    "double": "<f8",
-    "float64": "<f8",
-}
-
-
-def sigmoid(value: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-value))
-
-
-def normalize(value: np.ndarray, axis: int = -1, eps: float = 1.0e-8) -> np.ndarray:
-    length = np.linalg.norm(value, axis=axis, keepdims=True)
-    return value / np.maximum(length, eps)
-
-
-def numeric_suffix(name: str) -> int:
-    return int(name.rsplit("_", 1)[1])
-
-
-def parse_ply_header(path: Path) -> tuple[str, int, list[tuple[str, str]], int]:
-    with path.open("rb") as file:
-        first = file.readline().decode("ascii", errors="replace").strip()
-        if first != "ply":
-            raise ValueError(f"{path} is not a PLY file")
-
-        fmt = ""
-        vertex_count = 0
-        vertex_properties: list[tuple[str, str]] = []
-        in_vertex = False
-        header_bytes = len(first.encode("ascii")) + 1
-
-        while True:
-            line_bytes = file.readline()
-            if not line_bytes:
-                raise ValueError("unexpected EOF while reading PLY header")
-            header_bytes += len(line_bytes)
-            line = line_bytes.decode("ascii", errors="replace").strip()
-            parts = line.split()
-            if not parts:
-                continue
-            if parts[0] == "format":
-                fmt = parts[1]
-            elif parts[0] == "element":
-                in_vertex = parts[1] == "vertex"
-                if in_vertex:
-                    vertex_count = int(parts[2])
-            elif parts[0] == "property" and in_vertex:
-                if parts[1] == "list":
-                    raise ValueError("list properties are not supported for vertex-only 3DGS PLY loading")
-                vertex_properties.append((parts[2], parts[1]))
-            elif parts[0] == "end_header":
-                break
-
-    if fmt not in ("ascii", "binary_little_endian"):
-        raise ValueError(f"unsupported PLY format: {fmt}")
-    if vertex_count <= 0:
-        raise ValueError("PLY has no vertex element")
-    return fmt, vertex_count, vertex_properties, header_bytes
-
-
-def load_ply_properties(path: Path) -> dict[str, np.ndarray]:
-    fmt, vertex_count, properties, header_bytes = parse_ply_header(path)
-    names = [name for name, _dtype_name in properties]
-    if fmt == "ascii":
-        with path.open("rb") as file:
-            file.seek(header_bytes)
-            body = file.read().decode("utf-8", errors="replace")
-        data = np.loadtxt(io.StringIO(body))
-        if data.ndim == 1:
-            data = data[None, :]
-        return {name: data[:, index].astype(np.float32) for index, name in enumerate(names)}
-
-    dtype_fields = []
-    for name, dtype_name in properties:
-        if dtype_name not in PLY_DTYPE_MAP:
-            raise ValueError(f"unsupported PLY property type: {dtype_name}")
-        dtype_fields.append((name, np.dtype(PLY_DTYPE_MAP[dtype_name])))
-    dtype = np.dtype(dtype_fields)
-    with path.open("rb") as file:
-        file.seek(header_bytes)
-        data = np.frombuffer(file.read(vertex_count * dtype.itemsize), dtype=dtype, count=vertex_count)
-    return {name: np.asarray(data[name], dtype=np.float32) for name in names}
-
-
-def required(properties: dict[str, np.ndarray], name: str) -> np.ndarray:
-    if name not in properties:
-        raise KeyError(f"missing required PLY property: {name}")
-    return properties[name]
-
-
-def build_gaussian_arrays(properties: dict[str, np.ndarray], sh_degree: int) -> dict[str, np.ndarray]:
-    means = np.stack([required(properties, "x"), required(properties, "y"), required(properties, "z")], axis=1).astype(np.float32)
-    scale_names = sorted([name for name in properties if name.startswith("scale_")], key=numeric_suffix)
-    rot_names = sorted([name for name in properties if name.startswith("rot_")], key=numeric_suffix)
-    f_dc_names = sorted([name for name in properties if name.startswith("f_dc_")], key=numeric_suffix)
-    f_rest_names = sorted([name for name in properties if name.startswith("f_rest_")], key=numeric_suffix)
-
-    if len(scale_names) < 3:
-        raise KeyError("expected scale_0, scale_1, scale_2")
-    if len(rot_names) < 4:
-        raise KeyError("expected rot_0, rot_1, rot_2, rot_3")
-    if len(f_dc_names) < 3:
-        raise KeyError("expected f_dc_0, f_dc_1, f_dc_2")
-
-    scales = np.exp(np.stack([properties[name] for name in scale_names[:3]], axis=1)).astype(np.float32)
-    quats = normalize(np.stack([properties[name] for name in rot_names[:4]], axis=1).astype(np.float32))
-    opacities = sigmoid(required(properties, "opacity")).astype(np.float32)
-    f_dc = np.stack([properties[name] for name in f_dc_names[:3]], axis=1).astype(np.float32)
-
-    max_bases = 1 + len(f_rest_names) // 3
-    requested_bases = (sh_degree + 1) ** 2
-    if requested_bases > max_bases:
-        raise ValueError(f"requested sh_degree={sh_degree} needs {requested_bases} bases, but PLY provides {max_bases}")
-    sh = np.zeros((means.shape[0], max(1, requested_bases), 3), dtype=np.float32)
-    sh[:, 0, :] = f_dc
-    if requested_bases > 1:
-        f_rest = np.stack([properties[name] for name in f_rest_names], axis=1).astype(np.float32)
-        extra_bases = requested_bases - 1
-        for basis in range(extra_bases):
-            for channel in range(3):
-                sh[:, basis + 1, channel] = f_rest[:, channel * (max_bases - 1) + basis]
-
-    rgb_dc = np.clip(SH_C0 * f_dc + 0.5, 0.0, 1.0).astype(np.float32)
-    return {
-        "means": means,
-        "scales": scales,
-        "quats": quats,
-        "opacities": opacities,
-        "sh": sh,
-        "rgb_dc": rgb_dc,
-        "f_rest_count": np.array([len(f_rest_names)], dtype=np.int32),
-        "max_sh_degree": np.array([int(round(math.sqrt(max_bases) - 1)) if int(round(math.sqrt(max_bases))) ** 2 == max_bases else 0], dtype=np.int32),
-    }
-
-
-def load_cameras(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if "frames" not in payload:
-        raise ValueError(f"{path} does not contain frames")
-    return payload
-
-
-def camera_tensors(frame: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
-    return np.asarray(frame["view_matrix"], dtype=np.float32), np.asarray(frame["K"], dtype=np.float32)
 
 
 def cuda_device_index(device: str) -> int:

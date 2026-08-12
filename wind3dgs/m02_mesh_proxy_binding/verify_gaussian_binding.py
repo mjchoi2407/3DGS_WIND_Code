@@ -9,6 +9,10 @@ import math
 from pathlib import Path
 from typing import Sequence
 
+import numpy as np
+
+from wind3dgs.transport import covariance_from_scale_rotation
+
 
 ROOT = Path(__file__).resolve().parents[3] / "experiments" / "M02_mesh_proxy_binding"
 ASSET_DIR = ROOT / "assets"
@@ -116,13 +120,10 @@ def transport_local_frame(
 
 
 def covariance_from_frame(local_frame: Sequence[Sequence[float]], scales: Sequence[float]) -> list[list[float]]:
-    covariance = [[0.0, 0.0, 0.0] for _ in range(3)]
-    for axis, scale in zip(local_frame, scales):
-        variance = scale * scale
-        for row in range(3):
-            for column in range(3):
-                covariance[row][column] += variance * axis[row] * axis[column]
-    return covariance
+    row_axes = np.asarray(local_frame, dtype=np.float64)
+    scale_array = np.asarray(scales, dtype=np.float64)
+    covariance = covariance_from_scale_rotation(scale_array, row_axes.T)
+    return covariance.tolist()
 
 
 def matrix_vector(matrix: Sequence[Sequence[float]], vector: Sequence[float]) -> list[float]:

@@ -30,7 +30,6 @@ Controls:
 from __future__ import annotations
 
 import argparse
-import io
 import math
 import sys
 from dataclasses import dataclass
@@ -40,7 +39,16 @@ import glfw
 import moderngl
 import numpy as np
 
+from wind3dgs.io import load_inria_3dgs_ply, load_ply_properties, parse_ply_header
+from wind3dgs.io.gaussian_ply import (  # noqa: F401 - legacy symbol compatibility
+    PLY_DTYPE_MAP,
+    SH_C0,
+    numeric_suffix,
+    required,
+    sigmoid,
+)
 from wind3dgs.m03_procedural_wind import WindParameters, procedural_wind_deform_vertices
+from wind3dgs.transport import covariance_from_scale_rotation, quaternion_wxyz_to_matrix
 
 
 ROOT = Path(__file__).resolve().parents[3] / "experiments" / "M02_mesh_proxy_binding"
@@ -48,7 +56,6 @@ ASSET_DIR = ROOT / "assets"
 ASSET_CELLS = (10, 30, 50)
 DEFORMATION_MODES = ("sine", "bend", "twist", "edge_flap", "compound", "wind")
 TRANSPORT_MODES = ("full", "position_only")
-SH_C0 = 0.28209479177387814
 DEFORMATION_LABELS = {
     "sine": "sine flutter",
     "bend": "bend",
@@ -61,46 +68,12 @@ TRANSPORT_LABELS = {
     "full": "position + frame/covariance",
     "position_only": "position only",
 }
-PLY_DTYPE_MAP = {
-    "char": "i1",
-    "uchar": "u1",
-    "int8": "i1",
-    "uint8": "u1",
-    "short": "<i2",
-    "ushort": "<u2",
-    "int16": "<i2",
-    "uint16": "<u2",
-    "int": "<i4",
-    "uint": "<u4",
-    "int32": "<i4",
-    "uint32": "<u4",
-    "float": "<f4",
-    "float32": "<f4",
-    "double": "<f8",
-    "float64": "<f8",
-}
-
-
 def mesh_asset_path(cells: int) -> Path:
     return ASSET_DIR / f"cloth_{cells}x{cells}_cells.npz"
 
 
 def gaussian_asset_path(cells: int) -> Path:
     return ASSET_DIR / f"cloth_{cells}x{cells}_cells_gaussians.npz"
-
-
-def sigmoid(values: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-values))
-
-
-def numeric_suffix(name: str) -> int:
-    return int(name.rsplit("_", 1)[1])
-
-
-def required(properties: dict[str, np.ndarray], name: str) -> np.ndarray:
-    if name not in properties:
-        raise KeyError(f"missing required PLY property: {name}")
-    return properties[name]
 
 
 def normalize_rows(values: np.ndarray, eps: float = 1.0e-8) -> np.ndarray:
@@ -118,121 +91,20 @@ def triangle_frame_axes(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(np.stack([tangent, bitangent, normal], axis=1), dtype=np.float32)
 
 
-def parse_ply_header(path: Path) -> tuple[str, int, list[tuple[str, str]], int]:
-    with path.open("rb") as file:
-        first = file.readline().decode("ascii", errors="replace").strip()
-        if first != "ply":
-            raise ValueError(f"{path} is not a PLY file")
-
-        fmt = ""
-        vertex_count = 0
-        vertex_properties: list[tuple[str, str]] = []
-        in_vertex = False
-        header_bytes = len(first.encode("ascii")) + 1
-
-        while True:
-            line_bytes = file.readline()
-            if not line_bytes:
-                raise ValueError("unexpected EOF while reading PLY header")
-            header_bytes += len(line_bytes)
-            line = line_bytes.decode("ascii", errors="replace").strip()
-            parts = line.split()
-            if not parts:
-                continue
-            if parts[0] == "format":
-                fmt = parts[1]
-            elif parts[0] == "element":
-                in_vertex = parts[1] == "vertex"
-                if in_vertex:
-                    vertex_count = int(parts[2])
-            elif parts[0] == "property" and in_vertex:
-                if parts[1] == "list":
-                    raise ValueError("list properties are not supported for vertex-only 3DGS PLY loading")
-                vertex_properties.append((parts[2], parts[1]))
-            elif parts[0] == "end_header":
-                break
-
-    if fmt not in ("ascii", "binary_little_endian"):
-        raise ValueError(f"unsupported PLY format: {fmt}")
-    if vertex_count <= 0:
-        raise ValueError("PLY has no vertex element")
-    return fmt, vertex_count, vertex_properties, header_bytes
-
-
-def load_ply_properties(path: Path) -> dict[str, np.ndarray]:
-    fmt, vertex_count, properties, header_bytes = parse_ply_header(path)
-    names = [name for name, _dtype_name in properties]
-    if fmt == "ascii":
-        with path.open("rb") as file:
-            file.seek(header_bytes)
-            body = file.read().decode("utf-8", errors="replace")
-        data = np.loadtxt(io.StringIO(body))
-        if data.ndim == 1:
-            data = data[None, :]
-        return {name: data[:, index].astype(np.float32) for index, name in enumerate(names)}
-
-    dtype_fields = []
-    for name, dtype_name in properties:
-        if dtype_name not in PLY_DTYPE_MAP:
-            raise ValueError(f"unsupported PLY property type: {dtype_name}")
-        dtype_fields.append((name, np.dtype(PLY_DTYPE_MAP[dtype_name])))
-    dtype = np.dtype(dtype_fields)
-    with path.open("rb") as file:
-        file.seek(header_bytes)
-        data = np.frombuffer(file.read(vertex_count * dtype.itemsize), dtype=dtype, count=vertex_count)
-    return {name: np.asarray(data[name], dtype=np.float32) for name in names}
-
-
 def load_3dgs_ply_arrays(path: Path) -> dict[str, np.ndarray]:
-    properties = load_ply_properties(path)
-    scale_names = sorted([name for name in properties if name.startswith("scale_")], key=numeric_suffix)
-    rot_names = sorted([name for name in properties if name.startswith("rot_")], key=numeric_suffix)
-    f_dc_names = sorted([name for name in properties if name.startswith("f_dc_")], key=numeric_suffix)
-    if len(scale_names) < 3:
-        raise KeyError("expected scale_0, scale_1, scale_2")
-    if len(rot_names) < 4:
-        raise KeyError("expected rot_0, rot_1, rot_2, rot_3")
-    if len(f_dc_names) < 3:
-        raise KeyError("expected f_dc_0, f_dc_1, f_dc_2")
-
-    means = np.stack([required(properties, "x"), required(properties, "y"), required(properties, "z")], axis=1).astype(np.float32)
-    scales = np.exp(np.stack([properties[name] for name in scale_names[:3]], axis=1)).astype(np.float32)
-    quats = normalize_rows(np.stack([properties[name] for name in rot_names[:4]], axis=1).astype(np.float32))
-    opacities = sigmoid(required(properties, "opacity")).astype(np.float32)
-    f_dc = np.stack([properties[name] for name in f_dc_names[:3]], axis=1).astype(np.float32)
-    colors = np.clip(SH_C0 * f_dc + 0.5, 0.0, 1.0).astype(np.float32)
+    source = load_inria_3dgs_ply(path)
     return {
-        "means": np.ascontiguousarray(means, dtype=np.float32),
-        "scales": np.ascontiguousarray(scales, dtype=np.float32),
-        "quats": np.ascontiguousarray(quats, dtype=np.float32),
-        "opacities": np.ascontiguousarray(opacities, dtype=np.float32),
-        "colors": np.ascontiguousarray(colors, dtype=np.float32),
+        "means": source.means,
+        "scales": source.scales,
+        "quats": source.quaternions_wxyz,
+        "opacities": source.opacities,
+        "colors": source.rgb_dc,
     }
 
 
 def quaternion_wxyz_to_axis_rows(quats: np.ndarray) -> np.ndarray:
-    quats = normalize_rows(np.asarray(quats, dtype=np.float32))
-    w, x, y, z = quats.T
-    xx = x * x
-    yy = y * y
-    zz = z * z
-    xy = x * y
-    xz = x * z
-    yz = y * z
-    wx = w * x
-    wy = w * y
-    wz = w * z
-    matrices = np.empty((quats.shape[0], 3, 3), dtype=np.float32)
-    matrices[:, 0, 0] = 1.0 - 2.0 * (yy + zz)
-    matrices[:, 0, 1] = 2.0 * (xy - wz)
-    matrices[:, 0, 2] = 2.0 * (xz + wy)
-    matrices[:, 1, 0] = 2.0 * (xy + wz)
-    matrices[:, 1, 1] = 1.0 - 2.0 * (xx + zz)
-    matrices[:, 1, 2] = 2.0 * (yz - wx)
-    matrices[:, 2, 0] = 2.0 * (xz - wy)
-    matrices[:, 2, 1] = 2.0 * (yz + wx)
-    matrices[:, 2, 2] = 1.0 - 2.0 * (xx + yy)
-    return np.ascontiguousarray(np.swapaxes(matrices, 1, 2), dtype=np.float32)
+    matrices = quaternion_wxyz_to_matrix(np.asarray(quats, dtype=np.float32))
+    return np.ascontiguousarray(np.swapaxes(matrices, -1, -2), dtype=np.float32)
 
 
 def perspective(fovy_radians: float, aspect: float, z_near: float, z_far: float) -> np.ndarray:
@@ -692,8 +564,8 @@ def bound_gaussian_positions(asset: M02Asset, vertices: np.ndarray) -> np.ndarra
 
 
 def gaussian_covariances(asset: M02Asset, frames: np.ndarray) -> np.ndarray:
-    variances = asset.scales * asset.scales
-    return np.ascontiguousarray(np.einsum("gai,ga,gaj->gij", frames, variances, frames), dtype=np.float32)
+    rotations = np.swapaxes(np.asarray(frames, dtype=np.float32), -1, -2)
+    return covariance_from_scale_rotation(asset.scales, rotations)
 
 
 def build_gaussian_frame_lines(

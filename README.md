@@ -77,4 +77,11 @@ PYTHONPATH=code .venv/bin/python -m wind3dgs.runtime.td00_smoke \
 - `transport/`: final anchor-to-Gaussian affine transport
 - `evaluation/`: metric, baseline, profiling, opt-in representation ablation. Runtime dependency graph가 이 package를 역으로 import해서는 안 된다.
 
-기존 `m01_*`--`m04_*` import 경로는 후속 추출 전까지 그대로 보존한다.
+초기 재사용 추출은 다음 경계를 따른다.
+
+- `io/gaussian_ply.py`는 Inria PLY의 원본 log-scale, `wxyz` quaternion, opacity logit, full appearance SH를 손실 없이 decode한다. Appearance/frame/unit metadata가 아직 고정되지 않았으므로 `CanonicalGaussianAsset`로 자동 승격하지 않는다.
+- `transport/rotations.py`는 scalar-first `wxyz` quaternion과 column-basis rotation matrix를 사용한다.
+- `transport/covariance.py`는 `R diag(s^2) R^T`와 `F Sigma F^T`만 제공한다. 기존 M02의 `full` mode는 scale/shear를 보존하지 않는 `legacy_triangle_corotational` baseline이며 TD full-affine transport 완료 증거가 아니다.
+- 의존 방향은 legacy `m01_*`/`m02_*` -> semantic package다. Semantic package가 legacy module을 import하는 반대 방향은 금지한다.
+
+기존 `m01_*`--`m04_*` import 경로와 CLI는 호환 wrapper/baseline으로 계속 보존한다.
