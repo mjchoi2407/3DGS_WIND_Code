@@ -38,6 +38,9 @@ legacy-viewer = [
   "moderngl==5.12.0",
   "Pillow==12.1.1",
 ]
+newton-viewer = [
+  "newton[examples]>=1.3,<1.4",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -63,4 +66,3 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.10"
 warn_unused_configs = true
 check_untyped_defs = true
-

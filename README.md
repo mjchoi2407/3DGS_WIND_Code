@@ -6,7 +6,9 @@ Wind3DGS 프로젝트의 재사용 구현 workspace다.
 
 ## 현재 방향
 
-현재 방법과 구현 체크리스트는 `../ideas/README.md`에서 찾는다. 새 구현은 계약·저장소 거버넌스 단계인 TD00부터 `TD##` milestone namespace를 사용한다. 기존 M01--M04 module은 재사용 baseline, fixture, legacy 비교 또는 offline support로 보존하지만, 현재 방법이 구현되었다는 증거로 승계하지 않는다.
+현재 방법과 구현 체크리스트는 `../ideas/README.md`에서 찾는다. 현재 learned-response 방법의 개발 순서와 완료 기준은 `../ideas/development/`의 R0--R7 문서가 소유한다. 기존 TD00 계약·저장소 거버넌스 구현과 `TD##` 기록, M01--M04 module은 재사용 후보·baseline·fixture 또는 offline support이며, 현행 R-stage 완료 증거로 자동 승계하지 않는다.
+
+새 채팅은 [2026-09-07 Teacher 구현·GPU 검증 인수인계](sessions/2026-09-07_07_teacher_gpu_checkpoint.md)부터 확인한다. Registry→trajectory→wind suite→초기 변위→공통 probe→수렴 비교→GPU 검사까지 구현했고, GTX 1080 Ti에서 GPU smoke 12/12단계를 통과했다. **물리 수렴과 학습 dataset 발행은 아직 완료되지 않았다.** 기능별 이력은 [sessions index](sessions/README.md), 실제 GPU 결과와 남은 문제는 [실험 검토 기록](../experiments/R1_teacher_smoke/README.md)에서 확인한다. [2026-09-06 인수인계](sessions/2026-09-06_01_teacher_dataset_handoff.md)는 그 이전 상태의 기록이다.
 
 ## 구성
 
@@ -85,3 +87,646 @@ PYTHONPATH=code .venv/bin/python -m wind3dgs.runtime.td00_smoke \
 - 의존 방향은 legacy `m01_*`/`m02_*` -> semantic package다. Semantic package가 legacy module을 import하는 반대 방향은 금지한다.
 
 기존 `m01_*`--`m04_*` import 경로와 CLI는 호환 wrapper/baseline으로 계속 보존한다.
+
+## Teacher용 절차적 샘플 메시
+
+`wind3dgs.teacher.sample_meshes`는 solver와 분리된 세 가지 SI 단위 천 fixture를 생성한다. 모든 형상은 `+Z`가 위쪽이고 일관된 앞면 법선과 기본 바람 방향이 `+Y`다.
+
+- `rectangular_flag`: 왼쪽 변 전체를 고정한 사각 깃발
+- `triangular_flag`: 중복 정점 없는 단일 꼭짓점과 왼쪽 고정 변을 가진 삼각 깃발
+- `handkerchief`: 상단 전체가 아니라 양쪽 귀퉁이 부근의 두 clip patch만 고정한 천
+
+다음 명령은 저장소를 오염시키지 않도록 사용자가 지정한 출력 폴더에 OBJ와 pickle-free NPZ를 생성한다.
+
+```bash
+PYTHONPATH=. ../.venv/bin/python -m wind3dgs.teacher.generate_sample_meshes \
+  --shape all \
+  --resolution 24 16 \
+  --output-dir /tmp/wind3dgs_sample_meshes
+```
+
+NPZ에는 `vertices`, `faces`, `edges`, `uv`, `pinned`, `pin_groups`, `metadata_json`이 들어간다. `pin_groups`의 0은 자유 정점, 1과 2는 서로 다른 고정 부위를 뜻한다. 현재 단계는 geometry fixture만 제공하며 Newton solver 상태나 3DGS binding을 포함하지 않는다.
+
+## Newton 샘플 천 뷰어
+
+Newton viewer는 별도 optional extra로 설치한다. Newton 1.3 계열과 `ViewerGL`에 필요한 examples dependency를 core 환경에서 분리한다.
+
+```bash
+cd code
+../.venv/bin/python -m pip install -e '.[newton-viewer]'
+```
+
+가장 간단한 실행 방법은 다음 스크립트다.
+
+```bash
+./scripts/run_sample_cloth_viewer.sh rectangular_flag
+./scripts/run_sample_cloth_viewer.sh triangular_flag --wind-speed 7
+./scripts/run_sample_cloth_viewer.sh handkerchief --resolution 32 32 --paused
+./scripts/run_sample_cloth_viewer.sh rectangular_flag --mode teacher
+./scripts/run_sample_cloth_viewer.sh handkerchief --mode teacher --total-mass-kg 0.08
+./scripts/run_sample_cloth_viewer.sh handkerchief --mode teacher \
+  --initial-state-policy gravity_equilibrated --total-mass-kg 0.08
+```
+
+기본 device는 Warp가 자동 선택한다. 명시적으로 고르려면 환경 변수를 사용한다.
+
+```bash
+WIND3DGS_NEWTON_DEVICE=cuda:0 ./scripts/run_sample_cloth_viewer.sh rectangular_flag
+WIND3DGS_NEWTON_DEVICE=cpu ./scripts/run_sample_cloth_viewer.sh handkerchief
+```
+
+기본 `--mode demo`에서는 authored pose에서 중력을 켠 채 시작하며, `Ambient wind flow`로 주변 공기 유속을 켜거나 끄고 풍속, 방향, 결합 계수 `kappa`를 조절할 수 있다. 장면 오른쪽 위의 밝은 청록색 gizmo는 고정 원점에서 끝점으로 향하는 변위 전체를 바람 속도 벡터로 사용한다. 변위 방향은 풍향이고 변위 길이는 풍속이며, 원점은 `0 m/s`, 바깥 반지름은 현재 substeps의 viewer 안전 상한인 `10 m/s` 또는 `15 m/s`에 선형 대응한다. 끝점을 바깥 반지름 너머로 끌면 해당 상한으로 제한한다. Gizmo는 풍속 slider, `+Z` up 방위각(azimuth)·고도각(elevation), 읽기 전용 단위 XYZ 및 실제 `Velocity XYZ (m/s)`와 양방향으로 동기화된다. 변형된 천의 현재 질량중심에는 조작할 수 없는 청록색 흐름 화살표를 별도의 ImGui background overlay로 표시한다. 이 중앙 화살표도 풍속에 비례해 길어지며, 안전 상한에서 이전 고정 화살표보다 3배 긴 최대 길이가 된다. 실제 alpha blending을 적용하고 장면은 덮지만 패널보다는 뒤에 그려지므로 mesh에 가리지 않고 UI 글자를 가리지도 않는다. 풍향이 시선과 나란하면 화살표 대신 화면 안으로 들어가는 바람은 원+×, 화면 밖으로 나오는 바람은 원+점으로 표시하며 glyph 크기도 풍속에 따라 변하고 패널에는 `into/out of the screen` 안내를 보여준다. 금색 원+십자 표시는 현재 질량중심이자 카메라 orbit pivot이다. Wind3DGS viewer에서는 기본 Newton 조작과 달리 왼쪽 드래그를 이 pivot 주위 orbit으로 바꾸었다. `Ambient wind flow`를 끄거나 풍속이 0이면 중앙 흐름 화살표는 숨기지만 orbit pivot 표시는 남긴다. 이 switch를 꺼도 공기가 사라지는 것은 아니므로 `Air drag`가 켜져 있으면 `v_air=0`인 정지 공기와 움직이는 천의 상대속도로 저항력을 계속 계산한다. `--mode teacher`에서는 실행 중 주변 풍속 크기와 on/off만 바꿀 수 있고, 공기저항·재질·중력과 traction identity에 속하는 바람 방향 및 `kappa`는 setup 값으로 잠근다. 이때 gizmo는 조작할 수 없지만 읽기 전용 화살표 길이는 풍속 slider와 계속 동기화된다. `Space`는 재생/일시정지, `.`은 일시정지 상태에서 한 frame 진행, 상단 `Reset`은 선택한 canonical frame-zero state를 복원한다. 빨간 점은 고정 정점이며 회색 선은 깃대 또는 빨랫줄을 뜻한다.
+
+Viewer의 임시 수치 안전 범위는 기본 10 substeps에서 `0--10 m/s`다. `10--15 m/s`를 살펴보려면 `--substeps 20` 이상으로 다시 실행해야 하며, 이 조합도 canonical teacher 범위가 아니라 현재 샘플에서 확인한 개발용 범위다. 범위를 넘는 시작 설정은 실행 전에 거부하고, 실행 중 non-finite state, pin drift 또는 과도한 extent를 발견하면 interactive viewer를 자동 일시정지한 뒤 canonical state로 Reset하고 원인을 패널에 표시한다. 이는 force clamp나 traction guard 하향이 아니며, 논문용 teacher의 최종 풍속 범위와 substep은 별도 시간 수렴 실험으로 고정해야 한다.
+
+`kappa`는 풍속이 아니라 `traction=kappa*normal_relative_speed*abs(normal_relative_speed)`의 공력 결합 계수다. 기본값이자 현재 검증된 viewer 상한은 `0.6`이며 Demo에서는 `Air coupling kappa (advanced)`로 `0--0.6`만 조절할 수 있다. `5 m/s`에서 이를 `1.818`로 높이면 기본값보다 결합이 약 3.03배가 되어 CUDA 사각 깃발이 약 63 frame에 non-finite가 됐고, 20 structural substeps도 장기 발산을 제거하지 못했다. 따라서 viewer 시작 설정도 `0.6` 초과를 거부한다. 이 제한은 solver 물리식의 saturation이 아니라 검증되지 않은 interactive setup을 막는 입력 계약이다.
+
+Demo의 `Physics Diagnostics` 패널은 Gravity, Air drag, in-plane elasticity, area preservation, material damping, bending elasticity와 bending damping을 개별적으로 켜고 끌 수 있다. `All on/off`, `Gravity only`, `Aero only`, `Structure only` preset도 제공한다. 구조 항목을 변경하면 새 Newton model을 만들고 canonical state로 자동 Reset하며, R1이면 변경된 물리 조합으로 pre-roll도 다시 수행한다. Teacher에서는 이 패널을 읽기 전용으로 표시한다. Newton VBD의 불안정한 damping 경계 조합을 막기 위해 in-plane elasticity 또는 area preservation을 끄면 material damping도 함께 꺼지고, bending elasticity를 끄면 bending damping도 함께 꺼진다. 필요한 elasticity가 없는 상태에서 damping만 다시 켜는 조합은 거부한다. Bending damping은 명목 계수 `0.01`을 사용하지만 기본 활성 상태는 off이므로 기준 움직임은 유지되며, 패널에서 체크하거나 `--bending-damping-active`를 지정할 때만 적용된다.
+
+`Numerical Diagnostics`에는 held aerodynamic force norm, 자유 정점 최대 속도·frame-zero 변위, authored pose 대비 최대 하강량, 최대 절대 edge strain, triangle area 변화율, 최대 bend angle, pin drift와 traction-guard count를 표시한다. 같은 값과 전체 physics switch mask는 null/headless 실행의 JSON에도 기록된다. CLI ablation에는 `--no-gravity-active`, `--no-air-drag-active`, `--no-in-plane-elasticity-active`, `--no-area-preservation-active`, `--no-material-damping-active`, `--no-bending-elasticity-active`, `--bending-damping-active`를 사용할 수 있다. Membrane elasticity 항을 끄는 CLI ablation에는 `--no-material-damping-active`도 함께 지정해야 한다.
+
+Viewer의 Teacher 초기상태는 두 정책으로 분리한다. 기본 `gravity_off`는 중력을 0으로 바꾸고 authored flat rest를 frame zero로 쓰는 K0다. `--initial-state-policy gravity_equilibrated`는 설정된 중력 아래에서 바람 없이 pre-roll한 뒤 수렴 상태를 frame zero로 쓰는 R1이다. `authored`는 demo 전용이며 teacher에서 선택하면 거부한다. R1 pre-roll frame은 공개 `frame_count`, `sim_time_s`, wind-force sample count에 포함하지 않는다. 별도 Python API의 `displaced_gravity_off`는 아래 초기 변위 절을 따른다.
+
+R1 수렴 identity는 `max_free_speed_and_frame_displacement_consecutive_v1`이다. 기본값은 최소 30 frame 이후 자유 정점 최대 속도가 `0.005 m/s` 이하이고 frame 간 최대 변위가 `0.0001 m` 이하인 상태가 10 frame 연속 유지되는지를 검사하며, 최대 600 frame 안에 수렴하지 않으면 run을 실패로 거부한다. CLI의 `--equilibrium-*` 옵션으로 이 값들을 명시할 수 있고 JSON report에는 정책, effective gravity, 수렴 frame 수와 마지막 residual이 기록된다.
+
+현재 `teacher` 모드는 runtime control, metric mass ownership, gravity 초기상태, frame-start force hold와 traction guard를 구현한다. 아래 TeacherPhysicsRegistry API로 설정과 실제 모델을 대조하고, 별도의 단일 run writer로 trajectory를 기록할 수 있다. Viewer JSON은 registry나 trajectory를 자동 생성하지 않는다. Teacher 공간·시간 수렴 검증은 미완료이므로 이 모드의 출력만으로 canonical teacher evidence를 만들지 않는다.
+
+샘플 천의 metric은 SI 단위 `(L0, A_ref, M_ref)`로 관리한다. `A_ref`는 rest triangle 면적 합, `L0`는 rest AABB 대각선이며, Newton에 전달하는 유일한 질량 변환은 `surface_density=M_ref/A_ref`다. `--total-mass-kg`를 생략하면 이전 viewer의 움직임을 보존하기 위해 `0.15 kg/m^2`로부터 샘플별 초기 `M_ref`를 한 번 만들지만, solver config가 면밀도를 별도 mass owner로 받지는 않는다. Newton model 생성 직후 particle mass 합과 `M_ref`도 검사한다.
+
+기본 크기에서 이 호환 preset의 `M_ref`는 사각 깃발 `0.135 kg`, 삼각 깃발 `0.0675 kg`, 손수건 `0.0735 kg`이다. 논문용 teacher에서는 `--total-mass-kg`로 명시적인 object mass를 주는 것을 원칙으로 한다.
+
+이 viewer의 바람은 Newton 기본 particle impulse wind를 사용하지 않는다. 각 display frame 시작의 triangle 면적·법선과 `v_air-v_surface` 상대속도로 양면 normal drag를 한 번 계산해 전체 정점용 held-force buffer에 저장한다. 주변 바람이 꺼진 경우에도 `v_air=0`으로 같은 계산을 수행하므로 움직이는 천에는 정지 공기 저항이 생긴다. 고정점 몫도 이 물리 buffer에는 남기고, 각 Newton structural substep에서는 같은 buffer의 자유 정점 몫만 `particle_f`에 재적용한다. Sampling identity는 `frame_start_v1`이다. 충돌, self-contact, 3DGS binding, 데이터셋 기록은 이 개발용 viewer 범위에 포함하지 않는다.
+
+`--traction-guard-n-m2`는 raw traction의 vector norm을 triangle area 곱 전에 제한하는 domain 고정 numerical guard이며 기본값은 `10000 N/m^2`다. Guard는 물리계수나 안정화용 saturation이 아니다. JSON은 frame별·누적 activated triangle-sample count를 기록하고, teacher mode의 `require_healthy()`는 activation이 한 번이라도 있으면 해당 run을 failure/OOD로 거부한다. 정량 실험에서는 두 count가 모두 0이어야 한다.
+
+창 없이 solver 상태를 검증하려면 다음 smoke 명령을 사용한다.
+
+```bash
+PYTHONPATH=. ../.venv/bin/python -m wind3dgs.teacher.view_sample_cloth \
+  --shape rectangular_flag \
+  --viewer null \
+  --test \
+  --device cuda:0 \
+  --num-frames 120
+```
+
+Newton/Warp는 대화형 frame loop를 지원하지만 hard real-time deadline을 보장하지 않는다. 실제 frame rate는 해상도, VBD substep·iteration, device 성능에 따라 측정해야 한다.
+
+## TeacherPhysicsRegistry
+
+`wind3dgs.teacher.physics_registry`는 immutable typed SI record, strict JSON round-trip,
+registry/traction content hash와 source-group 참조 검사를 제공한다. 이 모듈과
+`wind3dgs.teacher`의 public import는 Newton/Warp를 요구하지 않는다.
+`wind3dgs.teacher.newton_physics_registry`는 optional Newton 1.3.0 mapping과 실제 모델 대조를 소유한다.
+현재 지원 범위는 기존 authored flat 샘플, homogeneous native material, 고정 attachment와 contact-off VBD다.
+자세한 범위와 검증 기록은 [registry 구현 session](sessions/2026-09-06_02_teacher_physics_registry.md)에 있다.
+
+다음은 Python 사용 예다. `split_manifest_ref`는 호출자가 실제 split manifest에서 얻은
+`ArtifactReference(artifact_id, sha256)`로 제공해야 한다. 예제용 ID/hash를 실제 데이터의 봉인 근거로 사용하지 않는다.
+
+```python
+from wind3dgs.teacher import TeacherPhysicsRegistry, make_sample_mesh
+from wind3dgs.teacher.newton_cloth import NewtonClothConfig, NewtonClothSimulation
+from wind3dgs.teacher.newton_physics_registry import (
+    build_teacher_physics_registry,
+    validate_against_simulation,
+)
+
+mesh = make_sample_mesh("rectangular_flag", resolution=(24, 16))
+config = NewtonClothConfig(run_mode="teacher", reference_mass_kg=0.135, device="cpu")
+registry = build_teacher_physics_registry(
+    mesh, config,
+    source_object_id="flag-source-001",
+    object_group_id="flag-source-001",
+    split_manifest_ref=split_manifest_ref,
+)
+simulation = NewtonClothSimulation(mesh, config)
+report = validate_against_simulation(registry, simulation)
+report.require_valid()
+restored = TeacherPhysicsRegistry.from_json(
+    registry.canonical_bytes(), expected_hash=registry.registry_hash,
+)
+assert restored.registry_hash == registry.registry_hash
+```
+
+Registry 생성은 simulation이나 파일 저장을 실행하지 않는다. 명시적 `M_ref`와 positive
+domain `normal_drag_kappa`를 요구하며, 공력을 끈 fixture는 `air_drag_enabled=False`로 표현한다.
+`M_ref`만 질량을 소유하고 면밀도는 `M_ref/A_ref`에서 유도한다. 실제 particle mass의 합과 정점별
+rest triangle 1/3 분배, inverse mass, 재질 배열, attachment, 중력, rest geometry, coloring 및 solver
+설정을 검사한다. 검사 시점의 finite state, pin drift, force sample count와 guard activation도 확인한다.
+
+Native parameter mapping은 다음과 같다. 이 단위는 **Newton 1.3.0 VBD의 실제 force/energy 식**에 대한
+mapping이며 일반적인 solver 공통 문서의 parameter 이름만으로 다른 constitutive model에 적용하지 않는다.
+
+| Config → Newton | SI 의미 |
+| --- | --- |
+| `stretch_stiffness` → `tri_ke` | membrane Lamé 입력 `mu`, N/m |
+| `area_stiffness` → `tri_ka` | membrane Lamé 입력 `lambda`, N/m; stable NH 내부에서 `lambda_nh=lambda+mu` |
+| `material_damping` → `tri_kd` | strain-rate damping의 시간 계수, s |
+| `bending_stiffness` → `edge_ke` | `0.5*edge_ke*rest_edge_length*(theta-theta0)^2`의 계수, N |
+| `bending_damping` → `edge_kd` | angle-rate damping의 시간 계수, s |
+
+`E/nu/h/rho` 변환, modal damping ratio와의 동등성 및 bending 계수의 mesh refinement 보정은 미검증이다.
+`particle_radius_m`는 collision radius이며 shell thickness가 아니다. Material preset을 연결할 때에는
+`material_preset_ref.sha256`가 **resolved `NativeClothMaterial.to_dict()`의 canonical content hash**여야 한다.
+Opaque 이름만으로 물성을 식별하거나 두 번째 density/mass owner를 추가할 수 없다.
+
+Registry는 비활성 항을 0으로 해석한 effective material, effective gravity, 초기상태 정책을 저장한다.
+Wind speed/ambient on-off는 run 소유이며, 현재 adapter에서 setup-fixed인 wind direction은 registry에 남는다.
+원래 명목값과 switch는 `report.to_dict()["requested_config"]`에 기록한다. `gravity_equilibrated`의
+실제 pre-roll frame 수·residual과 frame-zero position/velocity hash도 report에 있다.
+Pre-roll은 공력 전체 off이며 수렴 후 velocity를 0으로 만든다. Rest mass/area와 frame-zero geometry는 구별한다.
+CPU는 scalar solve, CUDA는 tile solve를 사용하는 현재 backend 정책과 실제 사용 방식도 구별한다.
+
+`traction_identity_hash`는 law/kappa/guard/sign/frame-start hold/SI identity를 비교하며,
+`registry_hash`는 전체 resolved 설정·source/object 참조·mesh·mapping/source identity를 포함한다.
+JSON key 순서, 실수 필드의 정수 표기와 signed zero를 정규화하고 배열은 little-endian C-order의
+shape/dtype/unit/content를 hash한다. Vertex/face 순서는 보존한다. Unknown/missing field와 version,
+중복 JSON key, NaN/Infinity, 잘못된 unit/shape/identity는 거부한다. Optional field도 v1에서는 알 수 없으면 거부한다.
+저장 경로·작성 시각·UI 상태는 registry에 없다. Newton 전체 Python source와 teacher package Python source를
+hash하므로 dirty/untracked 구현도 식별하며, source가 바뀌면 registry 재생성과 검증이 필요하다.
+
+`validate_source_membership()`은 외부 loader가 이미 hash 검증한 split manifest의 참조와
+`source_to_group` mapping을 대조한다. 전체 split 배정·봉인이나 mapping 출처의 독립 인증은 수행하지 않는다.
+Registry와 report는 teacher/training/evaluation 전용이며 target runtime용 serializer는 제공하지 않는다.
+
+`report.passed`는 설정·모델 일치 및 호출 시점까지의 제한된 health 검사다. 물리·mesh/timestep 수렴,
+전체 trajectory의 health, CPU/GPU bitwise replay, GS quadrature 일치 또는 R0/R1 전체 통과가 아니다.
+현재 rest-area mass와 current-area aerodynamic quadrature를 각각 명시하며, work 적분 convention은
+아래 저장기가 소유한다. Registry의 `convergence_status`는 `not_assessed`다. 단일 run manifest에
+실제 device/driver/Warp binary·입력 wind sample·seed·초기상태와 결과 identity를 기록한다.
+
+## Teacher 단일 run trajectory writer
+
+`wind3dgs.teacher.newton_trajectory.record_teacher_run()`은 명시적 per-frame `WindSample`을 받아
+상태·공력·외력 work를 저장한다. Wind waveform 생성과 여러 run의 dataset 구성은 후속 기능이다.
+위 예제로 만든 `mesh`, `config`, `registry`를 그대로 사용할 수 있다.
+
+```python
+from wind3dgs.teacher import TeacherTrajectoryArtifact, WindSample, inspect_teacher_run
+from wind3dgs.teacher.newton_trajectory import record_teacher_run, replay_teacher_run
+
+artifact = record_teacher_run(
+    mesh=mesh, config=config, registry=registry,
+    wind_samples=[WindSample(speed_m_s=1.0, ambient_enabled=True) for _ in range(120)],
+    output_dir="../experiments/artifacts/runs/teacher_writer_smoke_001",
+    chunk_frames=16,
+)
+restored = TeacherTrajectoryArtifact.open(artifact.path)
+for chunk in restored.iter_chunks():
+    positions_m = chunk["positions_m"]
+replay = replay_teacher_run(artifact.path, device="cpu")
+assert replay.passed
+```
+
+기존 출력 디렉터리는 비어 있어도 거부한다. 정상 반환은 모든 파일을 저장·검증한 뒤
+`manifest.json`의 `status="completed"`를 원자적으로 발행했음을 뜻한다. 큰 run은
+`experiments/artifacts/runs/` 아래에 두며 Git에 추가하지 않는다. 이 예제도 수렴된 학습 데이터의 증거가 아니다.
+
+| 저장 파일 | 내용 |
+| --- | --- |
+| `registry.json`, `request.json` | resolved physics identity, 원래 config, mesh metadata, 구간 수, seed |
+| `mesh.npz` | authored rest 위치, topology, UV, pin 및 group |
+| `wind.npz` | 요청 풍속(float64)과 ambient enable(bool), 각 T개 |
+| `initial_displacement.npz` (v2만) | rest mesh에 결합한 요청 초기 변위 float32 `[N,3]` m |
+| `model.npz`, `initial.npz` | 실제 particle mass, 고정점 제외 중력 force, frame-zero 위치·속도 |
+| `initial_validation.json`, `final_validation.json` | 실제 Newton 모델 대조, 초기상태 hash, pre-roll 잔차, 실제 solve/device |
+| `chunk_000000.npz` 등 | 시간, 위치·속도, 실제 float32 ambient vector, 면적·법선·traction, 전체·적용 공력, guard count, aero/gravity/external work |
+| `manifest.json` | 입력/출력 hash, source/environment, 구간 수, 완료·실패 상태와 writer convention |
+
+T개 구간에는 T+1개 state가 있다. 각 chunk는 K개 구간과 K+1개 state를 담으며 인접 chunk의
+경계 state 하나가 중복된다. 전체 state를 합칠 때 두 번째 chunk부터 첫 state를 제외한다.
+시간은 `frame_index/fps`다. 기본 16개, 최대 64개 구간씩 flush하여 trajectory 크기에 비례해
+메모리를 늘리지 않는다. Reader도 chunk 단위로 검사한다. 입력 wind 목록과 정적 mesh는 메모리에 둔다.
+Frame-zero 이후 이동은 `artifact.displacements_from_initial(positions_m)`으로,
+authored rest 기준 변형은 `artifact.displacements_from_rest(positions_m)`으로 계산한다.
+둘 다 float64 뺄셈이며 초기 변위가 있으면 frame zero에서 첫 값은 0, 두 번째 값은 초기 변형이다.
+기존 v1의 frame-zero 기준 이동 해석은 유지한다.
+
+면적·법선·traction은 실제 frame-start force 계산과 같은 kernel 실행에서 캡처한다. 추가 force sample은 없다.
+전체 공력에는 고정점 몫을 유지하고 applied force에서만 고정점 행을 0으로 만든다.
+공력 off도 면적·법선을 기록하며 traction/force/work는 0이다. Ambient off는 공력 off와 다르므로
+움직이는 표면의 정지 공기 저항이 남는다. R1 gravity pre-roll은 공개 시간축에 포함하지 않는다.
+
+Work convention은 `held_world_force_dot_frame_displacement_float64_v1`이다.
+`aero_work_j[n] = sum(F_applied[n] * (x[n+1]-x[n]))`를 float64로 계산한다.
+중력 work는 실제 정점 질량과 실제 float32 중력으로 따로 계산하고 합을 `external_work_j`로 남긴다.
+고정된 world force에서 이 값은 structural substep별 work 합과 일치한다. 내부 탄성·감쇠 에너지나
+지지 반력 work를 뜻하지 않는다. Registry v1의 `work_quadrature="deferred_to_trajectory_writer"`는
+유지하고 writer convention 전체를 run reproducibility hash에 넣는다.
+
+물리/계약 실패는 `TeacherRunFailed`를 발생시키며 예외의 `path`로 `inspect_teacher_run()`을 호출한다.
+Guard 활성, non-finite state, pin drift, 퇴화 face, reset/시계 불연속을 거부하고 정상 prefix를 flush한다.
+실패한 sample/state는 `failure_diagnostic.npz`에 분리하며 진단 전용 NPZ에는 NaN이 남을 수 있다.
+Guard 실패 시각은 구간 시작, 상태 검사 실패 시각은 관측한 끝 경계다. 도중 예외로 정확한 시각을
+알 수 없으면 `time_s=null`과 실패 구간을 기록한다. Pre-roll 실패는 공개 frame zero 없이 사유·잔차를 남긴다.
+`KeyboardInterrupt`/`SystemExit`는 `interrupted`를 저장한 뒤 다시 발생시킨다. I/O 오류는
+`io_failed` 또는 쓰기가 불가능했던 마지막 `running` 상태로 남으며 물리 실패와 구분한다.
+강제 종료 시 복구 범위는 마지막으로 기록된 checkpoint까지다. 전원 장애 내구성은 파일시스템에 의존하며
+초기 manifest조차 쓸 수 없는 디스크 상태의 기록은 보장하지 않는다.
+실패·미완료 run은 정상 reader로 읽을 수 없고 자동 reset/재개하지 않는다.
+
+JSON은 canonical UTF-8이며 NPZ는 numeric/bool 배열만 사용하고 `allow_pickle=False`로 읽는다.
+파일 SHA-256과 배열 shape/dtype/content hash를 함께 확인하고, 시간축·chunk 경계·초기 identity·질량·
+traction 적분·고정점 적용·work도 검사한다. Hash는 손상 검출과 identity 비교용이며 외부 서명 인증은 아니다.
+`content_sha256`는 run ID/생성 시각과 NPZ 포장 차이를 제외한 결과 identity지만 chunk 구성은 포함한다.
+Source commit/dirty 상태는 로컬 조회이며 remote fetch를 수행하지 않는다. Warp native binary hash도 기록한다.
+
+Replay는 저장한 mesh/config/wind로 새 simulation을 만들고 x/v/F/work의 최대 절대 오차와 통과 여부를 반환한다.
+기본 상대 tolerance는 `5e-5`, 절대 tolerance는 위치 `1e-6 m`, 속도 `1e-5 m/s`, 힘 `1e-6 N`, work `1e-9 J`다.
+이 값은 수치 재생용이며 teacher 공간·시간 수렴 기준이 아니다. CPU/GPU bitwise 동등성을 보장하지 않는다.
+Registry에 기록된 구현 source가 바뀌면 재생 검증도 거부한다. 환경 binary/driver 차이는 manifest로 비교할 수 있다.
+Dataset/object package ID는 아직 배정하지 않아 null이고 source split은 registry의 외부 참조만 유지한다.
+Writer 통과는 wind dataset 봉인, teacher 수렴, GS/probe mapping 또는 oracle preflight 통과를 뜻하지 않는다.
+
+구현·검증 기록: [2026-09-07 trajectory writer](sessions/2026-09-07_01_teacher_trajectory_writer.md).
+
+## Wind program과 순차 실행
+
+`WindProgram`은 물리 시간으로 정의한 고정 풍향의 풍속 프로그램이다. `WindSegment`를 이어 붙여
+일정풍, 짧은 pulse, step-on/off, zero-ambient rest/recovery, log-chirp를 구성한다.
+`run_teacher_wind_suite()`는 동일한 mesh/config/registry에서 각 프로그램을 별도 run으로 실행한다.
+각 run은 기존 writer의 canonical 초기상태에서 독립적으로 시작한다.
+
+```python
+from wind3dgs.teacher import (
+    WindProgram, WindSegment, TeacherWindSuiteArtifact,
+    inspect_teacher_wind_suite, run_teacher_wind_suite,
+)
+
+# mesh/config/registry는 위 TeacherPhysicsRegistry 예제와 동일하다.
+# 아래 수치는 API 사용 예이며 학습용 domain 범위를 동결한 값이 아니다.
+programs = [
+    WindProgram("pulse", (
+        WindSegment.pulse(duration_s=0.2, peak_speed_m_s=1.0),
+        WindSegment.zero_ambient(duration_s=0.8),
+    )),
+    WindProgram.step_on_off("step", speed_m_s=1.0, on_s=0.5, recovery_s=0.5),
+    WindProgram("chirp", (
+        WindSegment.log_chirp(duration_s=1.0, mean_speed_m_s=1.0,
+                              amplitude_m_s=0.25, frequency_start_hz=1.0,
+                              frequency_end_hz=5.0),
+    )),
+]
+suite = run_teacher_wind_suite(
+    mesh, config, registry, programs,
+    output_dir="../experiments/artifacts/runs/wind_suite_001",
+)
+checked = TeacherWindSuiteArtifact.open(suite.path)
+print(checked.manifest["counts"])
+print(checked.all_runs_passed)
+```
+
+프로그래밍 API를 제공하며 새 dependency나 별도의 CLI는 추가하지 않았다.
+`wind_programs.py`와 suite inspector/public import는 Newton 없이 동작한다. 실제 실행 시에만
+optional Newton 모듈을 import한다. Program JSON은 `canonical_bytes()` / `from_json()`으로 저장·복원한다.
+Unknown/missing field, 중복 key, non-finite 입력, 잘못된 ID와 비활성 파형용 parameter를 거부한다.
+
+| 구간 | 풍속과 ambient flag |
+| --- | --- |
+| `steady(D, S)` | D초 동안 S m/s, ambient on |
+| `zero_ambient(D)` | D초 동안 0 m/s, ambient off; 상대속도 drag는 남음 |
+| `pulse(D, P)` | 구간 내부 시간 u에서 `P*sin(pi*u/D)`, ambient on |
+| `log_chirp(D, S, A, f0, f1, phase)` | `S+A*sin(phase+2*pi*integral(f(u)))`, `f(u)=f0*exp(log(f1/f0)*u/D)` |
+
+Step-on/off helper는 선택적 before 구간, 일정풍 on 구간, zero-ambient recovery 구간을 연결한다.
+Pulse는 유한 길이의 **풍속** 자극이며 지정된 힘 impulse나 Dirac impulse를 뜻하지 않는다.
+Chirp는 `S >= A >= 0`, 양수 시작/끝 주파수를 요구하며 음수 풍속을 clipping하지 않는다.
+주파수가 같으면 단일 sinusoid이고, 주파수가 감소하는 chirp도 지원한다. 각 chirp 구간의 phase는
+명시한 `phase_rad`에서 시작하며 구간을 이어 붙일 때 자동 phase matching하지 않는다.
+
+Compiler convention은 `aligned_segments_frame_start_half_open_float64_v1`이다. 각 구간은
+`[시작, 끝)`을 소유하고 `duration_s*fps`가 정수 frame 수여야 한다(표현 오차 허용은 `1e-9 frame`).
+구간 길이를 조용히 반올림하거나 마지막 구간을 잘라내지 않는다. Half-sine pulse는 최소 2 interval,
+chirp 입력 주파수는 frame Nyquist 미만이어야 한다. 이 검사는 force/response 대역이나 teacher 수렴을 보증하지 않는다.
+Sampling은 float64이며 기존 writer가 실제 공력 입력을 float32로 기록한다. 구조 substep 수는
+program compiler의 입력이 아니다. `program_sha256`는 ID·초 단위 파형·compiler version을,
+`samples_sha256`는 실제 풍속/ambient 배열을 식별한다. FPS가 바뀌면 sample identity도 달라진다.
+
+Suite 폴더에는 다음을 남긴다.
+
+- `plan.json`: 원래 config, registry 전체, 선언한 모든 프로그램, seed, chunk 크기와 실행 policy.
+- `suite_manifest.json`: 계획 hash, 순서·sample hash·run 경로와 hash, 각 case 상태, 전체 분모와 종료 사유.
+- `runs/case_000000/` 등: 앞 절의 단일 run artifact. Case 번호는 실행 순서를 보존하고 ID는 별도로 기록한다.
+
+프로그램 목록/시간축을 실행 전에 검사하고, 새 폴더에 전체 계획과 `not_started` 목록을 먼저 기록한다.
+기존 폴더는 거부한다. 실행은 순차적이며 조건별 풍속 축소·자동 재시도·실패 run 삭제·resume를 하지 않는다.
+Seed는 각 run에 동일하게 전달하는 재현성 metadata이고 현재 파형에 난수 생성은 없다.
+동일 source group/split 참조를 유지하며 새 split이나 dataset/object package ID를 배정하지 않는다.
+실제 학습용 peak/duration/frequency는 development 수렴 검증 후 domain 전체에 공통으로 동결해야 한다.
+새 teacher 모듈도 registry의 implementation source hash에 포함되므로 이전 코드에서 생성한 registry는
+현재 구현으로 재생성·검증한 뒤 사용한다. 기존 artifact의 identity를 덮어쓰지는 않는다.
+
+검증 가능한 guard/non-finite/pin/extent/degenerate-face/pre-roll 물리 실패는 `failed`로 보존하고 다음 case를 실행한다.
+입력 불일치나 예상하지 못한 실행기 오류는 `aborted`, I/O 오류는 `io_failed`, 사용자 중단은 `interrupted`로
+기록하고 예외를 다시 발생시킨다. 아직 시작하지 않은 case는 `not_started`로 남는다.
+Checkpoint도 쓸 수 없는 디스크 상태에서는 마지막 `running` snapshot이 남을 수 있으며 초기 파일조차
+쓸 수 없거나 전원 장애가 발생한 경우의 내구성은 파일시스템에 의존한다.
+
+모든 case를 처리해도 물리 실패가 있으면 `completed_with_failures`, 모두 정상일 때만 `completed`와
+`all_runs_passed=True`다. 전부 물리 실패한 suite도 분모에 남고 전체 성공으로 표시하지 않는다.
+`counts`는 declared/attempted와 각 상태별 수를 함께 제공한다. `attempted`는 실행 진입한 case 수이며
+solver가 실제로 적분한 frame 수는 자식 run manifest에서 확인한다.
+`inspect_teacher_wind_suite()`는 중단·진행 중인 계획과 분모를 확인한다.
+`TeacherWindSuiteArtifact.open()`은 종료된 suite의 계획/분모/hash와 성공·실패한 자식 파일들을 대조한다.
+정상 자식 run에는 기존 trajectory의 시간축·힘·work 검증도 적용하며, 실패 자식은 prefix/진단의 파일 hash와
+요청 wind를 검사한다. 실패 trajectory를 정상 학습 입력으로 승격하지 않는다.
+
+고정 풍향/공간 균일 바람을 사용하며, 초기 변형을 지정하는 aero-off 자유감쇠 입력은 아래 API로 연결한다.
+Traveling gust, teacher 수렴, GS/probe/oracle과 split 봉인은 후속 범위다.
+구현·검증 기록: [2026-09-07 wind sequence runner](sessions/2026-09-07_02_teacher_wind_sequence_runner.md).
+
+## Aero-off 자유감쇠의 초기 변위
+
+`TeacherInitialDisplacement(mesh, displacement_m)`는 authored rest mesh에 결합한 초기 변위다.
+입력은 유한한 실수 `[N,3]` m 배열이며 고정점 변위는 정확히 0이어야 한다.
+Float32 범위 검사 후 정규화한 배열을 immutable bytes로 소유하고, 반환 배열은 복사본이다.
+Rest 위치·정점 순서·face·pin/group hash를 대조하므로 다른 mesh에 같은 배열을 재사용하지 않는다.
+정규화한 요청 변위와 `float32(rest + displacement)`로 실현한 frame-zero 위치를 각각 hash한다.
+아주 작은 변위가 덧셈에서 반올림되어 사라져도 요청 배열 자체는 보존한다.
+
+`make_cantilever_initial_displacement(mesh, amplitude_m=A)`는 Xmin 변 전체가 고정된 평면 strip/flag에
+`ΔY=A*((X-Xmin)/(Xmax-Xmin))**2`, `ΔX=ΔZ=0`을 평가한다. 고정변의 값과 기울기는 0이다.
+같은 물체를 refinement할 때 동일 SI 진폭의 연속 함수를 각 rest 정점에서 다시 평가한다.
+Strip은 폭·높이가 명시된 `rectangular_flag`로 만들며, 모서리를 고정한 handkerchief에는 이 helper를 적용하지 않는다.
+일반 배열 입력은 기존 샘플의 고정점·현재 면적·extent 검사를 통과하면 사용할 수 있다.
+
+첫 지원 범위는 `run_mode="teacher"`, `initial_state_policy="displaced_gravity_off"`,
+`air_drag_enabled=False`다. 이 정책은 `gravity_off`와 마찬가지로 effective gravity를 0으로 만들며
+초기 속도는 0, pre-roll은 없다. 변위 입력과 정책을 함께 지정해야 한다.
+초기 속도 여기, 중력 평형 후 변위와 공력이 켜진 초기 변위 실험은 아직 지원하지 않는다.
+Domain의 positive `kappa`와 guard identity는 기존 registry 규칙을 유지한다.
+
+```python
+from wind3dgs.teacher import make_cantilever_initial_displacement, WindProgram, WindSegment
+
+# mesh와 실제 split_manifest_ref는 위 registry 예제와 같이 호출자가 제공한다.
+# 아래 진폭·질량·solver 수치는 사용법 예시이며 수렴 검증된 domain preset이 아니다.
+initial_displacement = make_cantilever_initial_displacement(mesh, amplitude_m=0.02)
+config = NewtonClothConfig(
+    run_mode="teacher", reference_mass_kg=0.135, device="cpu",
+    initial_state_policy="displaced_gravity_off", air_drag_enabled=False,
+)
+registry = build_teacher_physics_registry(
+    mesh, config, source_object_id="flag_001", object_group_id="flag_001",
+    split_manifest_ref=split_manifest_ref, initial_displacement=initial_displacement,
+)
+decay = WindProgram("free_decay", (WindSegment.zero_ambient(1.0),))
+artifact = record_teacher_run(
+    mesh=mesh, config=config, registry=registry, initial_displacement=initial_displacement,
+    wind_samples=decay.compile(config.fps).samples,
+    output_dir="../experiments/artifacts/runs/free_decay_001",
+)
+```
+
+`NewtonClothSimulation`과 `run_teacher_wind_suite`도 같은 `initial_displacement=` keyword를 받는다.
+Newton model은 원래 rest로 만들고 state 두 개의 위치에만 변위를 적용한다. 질량, rest area,
+membrane rest pose와 bending rest angle/length는 바뀌지 않는다. Reset과 각 suite case는 같은
+변형된 frame zero와 속도 0에서 다시 시작한다. 기존 simulation report의 displacement 통계는
+frame-zero 이후 이동을 의미하며, edge strain/area change는 authored rest 기준이다.
+
+변위가 없는 경로는 registry/trajectory/suite v1을 유지하고, 초기 변위 경로만 각각 v2를 쓴다.
+v2 registry는 요청 변위·rest mesh binding·실현 위치 identity를 추가한다. 단일 run에는
+`initial_displacement.npz`를 `initial.npz`와 별도로 저장하며 reader는 실제 덧셈 결과도 대조한다.
+Suite v2는 root에도 요청 NPZ를 저장하고 `plan.json`에 파일/내용 hash를 포함한다.
+정상·실패한 각 child의 요청 변위를 함께 확인한다. 모든 NPZ는 `allow_pickle=False`로 읽는다.
+v1 파일 읽기는 계속 지원하지만 과거 source hash의 run을 새 코드로 재생할 때는 기존 구현 identity 검사가 적용된다.
+
+외력 0이어도 내부 탄성력으로 운동이 발생한다. 여기서 저장하는 aero/gravity/external work는 모두 0이며
+내부 탄성 에너지나 감쇠 소산 에너지를 뜻하지 않는다. 이 기능은 단조 에너지 감소, 감쇠계수 추정,
+공간·시간 수렴을 판정하지 않으며 `convergence_status=not_assessed`를 유지한다.
+구현·검증 기록: [2026-09-07 초기 변위](sessions/2026-09-07_03_teacher_initial_displacement.md).
+
+## Teacher 공통 probe 매핑과 추출
+
+`TeacherProbeSet`은 source object/group/split 참조, 고유한 probe ID 순서, float64 rest 좌표 `[P,3]` m와
+positive 면적 가중치 `[P]` m²를 소유한다. `A_ref=sum(w_A)`이며 질량 가중치는 유일한 질량 입력
+`M_ref`에서 `w_M=M_ref*(w_A/A_ref)`로 유도한다. 배열은 immutable bytes로 저장하고 반환값은 복사본이다.
+Mesh refinement마다 같은 probe 객체를 재사용한다. Probe를 현재 mesh 정점 번호로 정의하지 않는다.
+
+`build_teacher_probe_map(mesh, probes, policy=...)`의 첫 범위는 flat strip/rectangular flag다.
+각 probe를 rest triangle의 float64 barycentric weight로 연결하며, 공유 edge/vertex에서는 지원하는
+가장 작은 face index를 선택한다. Face index와 face 안의 vertex 순서, nonnegative weight를 저장한다.
+음수 weight는 명시한 barycentric roundoff 허용치 안에서만 0으로 정리하고 행 합을 정규화한다.
+이동한 위치와 요청 probe 사이의 coverage 및 normalized affine 오차도 별도로 검사한다.
+
+허용치는 기본값 없이 `ProbeMappingPolicy`로 모두 명시한다. 단위가 있는 coverage tolerance,
+barycentric·partition tolerance, rest AABB 대각선으로 정규화한 affine reproduction tolerance,
+probe 면적 합과 Teacher rest area의 relative tolerance다. 이는 매핑의 수치 검사이며 물리 수렴 허용치가 아니다.
+결과를 보고 개별 probe나 mesh에 유리하게 값을 바꾸지 않고 평가 전에 동일 policy를 정한다.
+
+Map은 constant/coordinate-linear reproduction과 면적·질량 가중 RMS, quadratic smooth-field 오차를 보고한다.
+Quadratic 오차는 현재 진단값이며 합격 판정에 섞지 않는다. 이를 0으로 요구하거나 Teacher 수렴으로 해석하지 않는다.
+하나라도 미지원이면 전체 map을 거부한다. 원래 probe 순서·분모와 사유를 유지하고, 해당 행은
+`face_indices=-1`, `support_indices=-1`, `weights=0`, `supported=False`로 저장한다.
+`nearest_surface_distance_m`는 유한한 rest triangle까지의 최소 거리다.
+미지원 행의 `mapped_rest_positions_m=0`은 sentinel이며 실제 좌표가 아니다.
+거부 map도 저장·재로딩할 수 있지만 모든 forward/adjoint 연산은 `TeacherProbeMappingError`를 발생시킨다.
+
+| API | 의미 |
+| --- | --- |
+| `map_positions`, `map_displacements`, `map_velocities` | `[... ,N,3]` → `[... ,P,3]`, float64 `S` 보간 |
+| `pullback_total_forces` | Probe별 총힘 N에 `Sᵀ` 적용 |
+| `pullback_tractions` | Probe traction Pa에 요청 rest 면적 measure를 한 번 곱한 뒤 `Sᵀ` 적용 |
+| `TeacherProbeMap.save/open` | Probe·rest mesh·policy·support/weight·진단·hash의 독립 artifact |
+| `extract_teacher_probe_trajectory` | 완료된 raw run을 새 경로의 probe trajectory로 추출 |
+| `TeacherProbeTrajectoryArtifact.open` | 자체 파일/시간축/초기상태/변위 기준 검사; 원본 경로 제공 시 전체 추출값 대조 |
+
+Adjoint는 full nodal force를 반환하여 고정점 몫도 보존한다. 실제 고정점 적용 mask는 solver 쪽 소유다.
+`F_P·(S u_T)=(SᵀF_P)·u_T`와 `tau_P·W_A(S u_T)=(SᵀW_A tau_P)·u_T`를 각각 검사한다.
+이 연산은 training/evaluation fixture용이다. Target runtime의 Gaussian force 경로에는 연결하지 않는다.
+
+다음은 사각형에 대한 사용 예다. 5×5와 아래 tolerance는 사용법 예시이며 동결된 연구 preset이 아니다.
+실제 평가에서는 source object의 probe 좌표·가중치·policy를 먼저 정하고 모든 refinement가 공유한다.
+
+```python
+import numpy as np
+from wind3dgs.teacher import (
+    TeacherTrajectoryArtifact, TeacherProbeSet, ProbeMappingPolicy, build_teacher_probe_map,
+    extract_teacher_probe_trajectory, TeacherProbeTrajectoryArtifact,
+)
+
+source = TeacherTrajectoryArtifact.open(raw_run_dir)
+lo, hi = source.mesh.vertices.min(axis=0), source.mesh.vertices.max(axis=0)
+points = np.array([(x, lo[1], z) for z in np.linspace(lo[2], hi[2], 5)
+                   for x in np.linspace(lo[0], hi[0], 5)], dtype=np.float64)
+w = np.array([0.5, 1, 1, 1, 0.5]) / 4  # 독립 rest grid의 trapezoidal 면적 measure
+areas = np.outer(w, w).ravel() * float(hi[0] - lo[0]) * float(hi[2] - lo[2])
+probes = TeacherProbeSet(
+    source=source.registry.source, probe_ids=[f"p{i:04d}" for i in range(len(points))],
+    rest_positions_m=points, area_weights_m2=areas,
+    reference_mass_kg=source.registry.metric.reference_mass_kg,
+)
+policy = ProbeMappingPolicy(
+    coverage_tolerance_m=1e-6, barycentric_tolerance=1e-12, partition_tolerance=1e-12,
+    affine_reproduction_tolerance=1e-6, quadrature_relative_tolerance=1e-6,
+)
+mapping = build_teacher_probe_map(source.mesh, probes, policy=policy)
+mapping.save(map_output_dir)  # 거부된 map도 전체 사유와 분모를 보존한다.
+mapping.require_valid()
+artifact = extract_teacher_probe_trajectory(raw_run_dir, mapping, probe_output_dir)
+verified = TeacherProbeTrajectoryArtifact.open(probe_output_dir, source_run_dir=raw_run_dir)
+assert verified.source_verified
+```
+
+Map artifact에는 `probes.json/npz`, `mesh.npz`, `policy.json`, `mapping.npz`, `report.json`과 manifest를 둔다.
+Reader는 입력 mesh/probe/policy에서 map을 다시 계산하여 저장된 support·weight·진단을 대조한다.
+Probe trajectory는 이 map을 `mapping/`에 포함하고 `source_registry.json`, `initial.npz`, bounded chunk와
+manifest를 저장한다. Raw v1/v2 schema는 그대로 읽으며 원본 파일은 수정하지 않는다.
+Manifest는 producer source hash, 원본 run/registry/content/manifest hash, map/probe identity와 추출 계약을 묶는다.
+새 teacher 모듈은 registry implementation source hash에도 포함되므로 새 simulation용 registry는 재생성해야 한다.
+기존 raw artifact의 읽기·probe 추출에는 Newton 실행이나 현재 source hash 일치를 요구하지 않는다.
+
+Chunk에는 `positions_m=S x`, `velocities_m_s=S v`, `rest_displacements_m=S(x-X_rest)`,
+`initial_displacements_m=S(x-x0)`를 float64로 저장한다. 요청 probe 위치 `p0`와 재현된 `S X_rest`는
+매핑 오차만큼 다를 수 있으므로 `S x-p0`를 rest 기준 변위로 사용하지 않는다.
+시간은 원본과 동일한 T구간/T+1상태이며, 원본 chunk 크기와 중복 boundary를 유지하고 시간 보간은 하지 않는다.
+전체 Teacher의 aero/gravity/external work는 `teacher_*_work_j`로 그대로 복사한다.
+이는 원래 nodal force ledger의 값이며 probe에 분배한 힘/일이 아니다.
+
+완료 발행 전에 원본을 기준으로 모든 추출값을 대조한다. Reader에 원본 경로를 주지 않으면 자체 무결성만
+검사하고 `source_verified=False`로 반환한다. 원본 경로를 주면 raw artifact를 검증하고 보간값·work 전체를
+재계산하며 `source_verified=True`가 된다. 경로 문자열 자체는 manifest에 저장하지 않는다.
+실패·중단 추출은 prefix inventory와 reason code를 보존한다. 디스크 checkpoint도 불가능한 경우 마지막
+`running` 기록이 남을 수 있다. `inspect_teacher_probe_artifact()`는 이를 조회하며 정상 reader는 거부한다.
+
+이 기능은 Teacher 쪽 평가 도구이며 GS 매핑·최종 common-valid mask·probe 수/threshold의 연구 동결과
+공간·시간 수렴 판정을 수행하지 않는다. 모든 결과는 `convergence_status=not_assessed`다.
+구현·검증 기록: [2026-09-07 공통 probe 매핑](sessions/2026-09-07_04_teacher_common_probe_mapping.md).
+
+## Teacher 공간·시간 수렴 비교
+
+`wind3dgs.evaluation`의 비교기는 검증된 원본 run과 공통 probe artifact를 받아
+공간/구조 timestep 차이를 별도 진단한다. NumPy core만 필요하며 Newton/Warp를 import하지 않는다.
+현재 범위는 structured flat strip/rectangular flag, gravity_off rest 또는 기존 cantilever quadratic
+초기 변위다. `gravity_equilibrated`, 임의 초기 변위 함수와 비정형 mesh는 지원하지 않는다.
+
+| API | 역할 |
+| --- | --- |
+| `TeacherConvergenceSpec` | 비교 축, tip ID, SI 정규화 척도, Hz 대역, 초기 입력 선언 |
+| `TeacherRefinementRun` | level ID와 원본/probe 경로; 입력 순서는 coarse→fine |
+| `compare_teacher_refinements` | 원본 재검증, 고정 조건 검사와 진단 계산 |
+| `TeacherConvergenceReport.save/open` | 결과 저장, 자체 검사 및 선택적 원본 재계산 |
+| `inspect_teacher_convergence_report` | 완료·실패·중단 prefix 상태 조회 |
+
+공간 비교는 같은 SI rest surface를 양 방향으로 같은 정수 비율로 세분화하고 `fps/substeps`를 고정한다.
+시간 비교는 같은 mesh와 `fps`에서 `substeps`만 늘린다. `fps`는 저장 간격뿐 아니라 공력 갱신 간격도
+바꾸므로 이번 시간 비교에서는 고정한다. 재료/질량/고정 경계/공력/seed/solver iterations와
+backend source·version·실제 device·실행 환경이 다르면 거부한다. Mesh와 timestep의 동시 변경은 거부한다.
+실제 mesh와 pin은 생성 설정으로 재구성하여 확인하고, 원본/probe의 source binding과 추출값을 대조한다.
+동일 ordered probe/가중치/mapping policy를 사용하며 tip은 Xmax 끝단 landmark ID로 지정한다.
+
+아래는 이미 생성한 세 spatial level에 대한 사용 예다. 디렉터리 이름, 정규화 척도와 대역은 예시이며
+수렴 실험에서 동결한 domain preset이 아니다. 각 디렉터리에 앞 절의 원본 run과 probe 추출물이 있어야 한다.
+
+```python
+from pathlib import Path
+from wind3dgs.evaluation import (
+    TeacherConvergenceSpec, TeacherRefinementRun,
+    TeacherConvergenceReport, compare_teacher_refinements,
+)
+
+root = Path("../experiments/artifacts/runs/teacher_development")
+runs = [
+    TeacherRefinementRun(name, root / name / "raw", root / name / "probe")
+    for name in ("mesh_coarse", "mesh_medium", "mesh_fine")
+]
+spec = TeacherConvergenceSpec(
+    axis="spatial",
+    tip_probe_ids=("tip_center",),  # 기존 probe set에 포함한 끝단 ID
+    reference_length_m=1.0,
+    reference_time_s=1.0,
+    frequency_bands_hz=((0.0, 10.0), (10.0, 20.0)),
+    initial_condition="gravity_off_rest",
+    initial_amplitude_m=None,
+)
+report = compare_teacher_refinements(runs, spec)
+output = root / "spatial_comparison"  # 새 경로만 사용
+report.save(output)
+checked = TeacherConvergenceReport.open(output, runs=runs)
+assert checked.source_verified
+summary = checked.to_dict()["summary"]
+```
+
+시간 비교는 별도로 생성한 고정 mesh/substeps 단계 목록에 `axis="temporal"`을 사용한다.
+자유감쇠는 `initial_condition="cantilever_quadratic", initial_amplitude_m=A`로 지정한다.
+비교기는 같은 연속 함수 ΔY=A·(X/width)^2를 각 mesh에서 다시 평가해 실제 요청 변위/초기 위치를 검사한다.
+서로 다른 vertex 배열의 hash만으로 동일 초기 입력이라고 간주하지 않는다.
+
+진단에는 다음 값을 포함한다.
+
+- 모든 probe의 rest 변위/속도: 질량 가중 공간 RMS와 전체 시간 trapezoidal RMS, 전체 최대 vector 오차.
+- 명시한 tip별 현재 위치 trace와 rest 기준 변위 오차.
+- 전체 Teacher의 aero/gravity/external 누적 work: RMS, 최대 차이와 마지막 signed 차이.
+- 질량 가중 velocity PSD와 지정 대역에서 적분한 PSD 절대 차이.
+- 인접 level 및 각 coarse→finest 비교, 3단계 이상일 때 인접 차이의 관측 order 진단.
+- 각 level의 mapping 보고서, analytic 초기 field에 대한 probe sampling/float32 실현 오차.
+
+SI 값과 무차원 값을 함께 저장한다. 변위는 L_ref, 속도는 V_ref=L_ref/T_ref,
+work는 M_ref·V_ref², spectrum 차이는 V_ref²로 나눈다. 상대 오차의 fine 기준값이 0이면
+`value=null, status=zero_reference`이며 임의 epsilon이나 사후 floor를 적용하지 않는다.
+공간 가중치는 probe mass/M_ref이며 현재 일정 면밀도 계약에서 면적 정규화 가중치와 동등하다.
+
+Spectrum은 T+1 상태 중 마지막 endpoint를 제외한 T개 velocity에 대해 probe별 평균을 제거하고
+periodic Hann window를 적용한다. One-sided PSD는 `fs*sum(window**2)`로 정규화하며,
+DC와 짝수 길이의 Nyquist 이외 bin은 두 배로 한다. 대역 적분은 FFT bin 합에 df를 곱한다.
+대역은 `[low, high)`이고 정확히 Nyquist인 상한만 포함한다. Nyquist 초과나 bin이 없는 대역은 거부한다.
+대역/window 선택의 canonical 동결, FRF fit와 dominant peak 검출은 별도 범위다.
+
+상태 비교는 원래 물리 시각에서 수행하고 chunk의 중복 endpoint를 한 번만 센다.
+U/V는 임시 memmap, norm은 64개 시각, FFT는 32개 probe 단위로 처리한다.
+임시 디스크 용량은 대략 `48*levels*(T+1)*probe_count` byte와 부가 자료에 비례한다.
+실패해도 입력 artifact를 변경하지 않는다. 결과의 JSON/NPZ는 별도 폴더에 저장하며 기존 출력은 덮어쓰지 않는다.
+
+Reader는 파일 hash/grid/형상과 시간·tip·work·spectrum·order 요약의 산술 일치를 검사한다.
+원본 없이 읽으면 `source_verified=False`다. 원본 목록을 주면 전체 비교를 다시 계산해 모든 입력 hash와
+지표를 대조한다. 원본 경로는 결과 파일에 저장하지 않는다. Checksum은 물리 provenance의 서명이 아니다.
+
+2단계는 `two_level_smoke_only`, 3단계 이상도 `refinement_diagnostic_only`다.
+동일 비율이 아니거나 차이가 0이면 관측 order를 억지로 계산하지 않고 사유를 남긴다.
+오차 비감소도 별도 표시한다. `convergence_status=not_assessed`와 `dominant_peak_status=not_assessed`를 유지한다.
+최종 threshold/accepted mesh/timestep, solver iteration 잔차 수렴, 공력 sampling 간격의 수렴,
+native 재료·bending의 continuum 대응, GS common-valid mask와 실제 학습 데이터 발행은 후속 작업이다.
+구현·검증 기록: [2026-09-07 수렴 비교기](sessions/2026-09-07_05_teacher_convergence_comparator.md).
+
+## 사용자 실행용 Teacher GPU 검사
+
+Workspace root에서 다음 명령을 실행하면 CUDA Teacher 생성·저장·probe 추출·수렴 비교·같은 GPU에서의
+재생을 검사하고 로그를 남긴다. 프로젝트 `.venv`를 사용하며 새 dependency를 설치하지 않는다.
+
+```bash
+bash code/scripts/check_teacher_gpu.sh
+# 다른 GPU를 선택할 때
+bash code/scripts/check_teacher_gpu.sh --device cuda:1
+```
+
+기본 `cuda:0`을 실제로 사용할 수 있어야 한다. CUDA 초기화/메모리 왕복에 실패하면 로그를 남기고 종료하며
+CPU로 대체하지 않는다. 첫 CUDA kernel 컴파일에는 시간이 걸릴 수 있다.
+작은 12 frame run 7개, 공간/시간/자유감쇠 비교 3개, 같은 device에서 replay 2개를 순서대로 수행한다.
+재생은 기존 replay API의 명시된 수치 허용치를 사용하며 해당 값과 최대 오차를 `checks.json`에 남긴다.
+
+결과는 `experiments/artifacts/runs/teacher_gpu_check/<timestamp>/`에 남는다.
+다른 새 폴더를 쓰려면 `--output`을 지정한다. 상대 출력 경로는 `code/` 기준이다.
+`WIND3DGS_PYTHON`으로 Python 실행 파일을, `WARP_CACHE_PATH`로 kernel cache 위치를 바꿀 수 있다.
+
+| 파일/폴더 | 검토 내용 |
+| --- | --- |
+| `summary.json` | 전체 상태, child 종료 코드, 완료 단계, 마지막 실행 단계 |
+| `checks.json` | 단계별 상태·소요 시간·health·원본/비교 hash와 replay 오차 |
+| `environment.json` | Python/라이브러리 버전, source hash, 제한된 GPU/driver 정보 |
+| `cuda.json` | Warp에서 확인한 CUDA 장치 정보; import/초기화가 먼저 실패하면 없을 수 있음 |
+| `run.log` | Python/native stdout·stderr와 traceback을 합친 실행 로그 |
+| `runs/`, `comparisons/` | 원본 trajectory, 공통 probe 추출물, 별도 비교 결과 |
+
+전체 12단계가 완료되어야 `status=passed`, exit code 0이다. 실패/중단에는 nonzero exit code와 마지막
+checkpoint를 남기며 기존 폴더를 덮어쓰거나 자동 재시도하지 않는다. Supervisor까지 강제 종료되면
+마지막 `running` 상태만 남을 수 있다. 로그의 개인 절대 경로는 marker로 치환하며 전체 환경 변수는 수집하지 않는다.
+실행 후 결과 폴더 경로를 알려주면 해당 파일과 원본 artifact를 검토할 수 있다.
+
+`passed`는 GPU 경로의 smoke 검사 통과다. 물리 수렴 판정과 학습 dataset 발행은 후속 범위다.
+구현·검증 기록: [2026-09-07 GPU 검사 실행기](sessions/2026-09-07_06_teacher_gpu_check_script.md).
+
+2026-09-07 사용자 실행 결과 `20260907_042524_687651`은 GTX 1080 Ti에서 **12/12단계 통과, 53.912초**다.
+원본을 연결한 비교 3개의 재계산도 일치했다. 공간 세분화의 속도 차이는 감소하지 않았고,
+시간 세분화의 마지막 속도 상대 RMS 차이는 11.41%, 자유감쇠 mesh 4→8은 193.25%였다.
+현재 모든 결과는 `convergence_status=not_assessed`다. [상세 검토와 compact evidence](../experiments/R1_teacher_smoke/README.md)를 보존했다.

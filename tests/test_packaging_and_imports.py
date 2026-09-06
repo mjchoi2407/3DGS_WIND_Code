@@ -35,7 +35,7 @@ class PackagingAndImportTests(unittest.TestCase):
 import builtins
 import importlib
 
-blocked = {"torch", "gsplat", "moderngl", "glfw", "glcontext", "PIL", "scipy", "yaml", "OpenGL"}
+blocked = {"torch", "gsplat", "moderngl", "glfw", "glcontext", "PIL", "scipy", "yaml", "OpenGL", "newton", "warp"}
 original_import = builtins.__import__
 
 def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
