@@ -7,6 +7,12 @@ Wind3DGS code-side. 사용자가 현재까지 진행한 내용을 문서와 Git�
 현행 연구 계약의 authority는 [ideas index](../../ideas/README.md)와 R0--R7 문서다.
 기존 TD##/M## 결과를 현행 R-stage 완료 근거로 승계하지 않는다.
 
+후속: 사용자가 다음 단계를 요청해 이 문서에서 제안했던 bending 감사 단위를 승인했다.
+구현·결과는 [2026-09-07 08 기록](2026-09-07_08_teacher_bending_audit.md)을 따른다.
+아래 미구현/승인 대기 설명은 이 checkpoint 작성 당시 상태다.
+
+최신 상태와 전체 후속 작업은 [2026-09-09 checkpoint](2026-09-09_01_teacher_checkpoint.md)를 따른다.
+
 ## 현재 상태
 
 Teacher를 실행해 trajectory를 저장하고 공통 probe에서 비교·재생하는 개발 경로가 준비됐다.

@@ -8,7 +8,66 @@ Wind3DGS 프로젝트의 재사용 구현 workspace다.
 
 현재 방법과 구현 체크리스트는 `../ideas/README.md`에서 찾는다. 현재 learned-response 방법의 개발 순서와 완료 기준은 `../ideas/development/`의 R0--R7 문서가 소유한다. 기존 TD00 계약·저장소 거버넌스 구현과 `TD##` 기록, M01--M04 module은 재사용 후보·baseline·fixture 또는 offline support이며, 현행 R-stage 완료 증거로 자동 승계하지 않는다.
 
-새 채팅은 [2026-09-07 Teacher 구현·GPU 검증 인수인계](sessions/2026-09-07_07_teacher_gpu_checkpoint.md)부터 확인한다. Registry→trajectory→wind suite→초기 변위→공통 probe→수렴 비교→GPU 검사까지 구현했고, GTX 1080 Ti에서 GPU smoke 12/12단계를 통과했다. **물리 수렴과 학습 dataset 발행은 아직 완료되지 않았다.** 기능별 이력은 [sessions index](sessions/README.md), 실제 GPU 결과와 남은 문제는 [실험 검토 기록](../experiments/R1_teacher_smoke/README.md)에서 확인한다. [2026-09-06 인수인계](sessions/2026-09-06_01_teacher_dataset_handoff.md)는 그 이전 상태의 기록이다.
+새 작업은 [2026-09-09 누적 checkpoint](sessions/2026-09-09_01_teacher_checkpoint.md)에서 이어받는다.
+이 채팅의 전체 구현 계보와 다음 작업을 정리했고, 논문 작성용 [Teacher 연구 기록](../ideas/development/r1_teacher_implementation_record.tex) /
+[PDF](../ideas/development/r1_teacher_implementation_record.pdf)에 수식·실패·수치·재현 근거를 연결했다.
+**개발 sample 15개 생성·검증은 완료했지만 본 학습 Teacher는 미승인이다.** P3 처방 압력의 공간·방향·기준 비교는
+통과했고 원래 x² 초기 속도 수렴은 실패 상태다. 아래는 단계별 당시 결과이며 최신 판정은 checkpoint를 따른다.
+기능별 전체 기록은 [sessions index](sessions/README.md)에 있다.
+
+선행 구현은 [CPU shell 동역학 기준 solver](sessions/2026-09-07_12_teacher_shell_dynamics_design.md)다.
+기존 3D 막·굽힘 힘/HVP에 M_ref 질량, rest 위치 pin, 고정 외력, Newmark/GMRES와 반력·실패 보존을 연결했다.
+새 검사 24개와 기존 회귀 검사를 합친 106개가 통과했다. [실제 CPU 진단](../experiments/R1_teacher_shell_dynamics/README.md)의
+19개 rollout·2,105 step은 모두 완료했고, 독립 재실행의 수치 report와 상태 배열이 일치했다.
+선형 진동의 시간 정확도는 통과했으나 비선형 속도 응답은 160/320 step 사이에 정규화 차이 11.394%가 남아
+`response_check=failed`다. 이 결과를 아래 시간 해상도 진단으로 이어갔으며 학습 Teacher 적격성은 미확정이다.
+기존 [정적 구조 진단](../experiments/R1_teacher_shell_structure/README.md)의 실패는 그대로 보존한다.
+공간 응답·감쇠/공력·GPU/GUI·새 Registry/trajectory 연결은 후속 범위다.
+
+이후 [시간 해상도·모드 진단기](sessions/2026-09-08_01_teacher_shell_temporal_design.md)를 구현했다.
+관련 131개 검사가 통과했고, [실제 CPU 결과](../experiments/R1_teacher_shell_temporal/README.md)의
+독립 DOP853 기준 두 개는 자체 대조를 통과했다. 기존 Newmark는 한 주기 2,560 step에서도
+정규화 속도 차이 11.7491%가 남았다. 초기 1/20주기의 N=5120에서는 5.50795%이며,
+더 작은 dt인 N=10240은 4 step 성공 후 5번째 line search가 실패했다.
+고주파 XY 모드의 시간 오차와 작은 dt의 위치 차분 정밀도를 구분해 검토할 단계다.
+기존 solver 정책은 유지했고 `teacher_eligible=false`, `convergence_status=not_assessed`다.
+
+시간 solver의 보완 구현은 [Newmark 가속도 변수 경로](sessions/2026-09-08_02_teacher_shell_precision_design.md)다.
+같은 Newmark 식·tolerance를 유지하며 가속도를 직접 풀고, 기존 경로와 다른 integrator identity로 기록한다.
+관련 155개 검사와 [실제 대조](../experiments/R1_teacher_shell_precision/README.md)의 정밀도 회귀가 통과했다.
+기존 5번째 step 실패를 재현한 뒤 새 경로의 3,457 step을 모두 완료했다.
+Short N=10240의 정규화 속도 차이는 2.20620%로 줄었으나 1% 기준에는 못 미쳤고,
+full N=2560의 차이는 기존과 거의 같은 11.7491%다. 다음 검토 대상은 남아 있는 시간 해상도 문제다.
+이 경로의 기본 solver·Registry 채택과 학습 dataset 발행은 아직 진행하지 않았다.
+
+이후 [짧은 구간 시간 refinement](sessions/2026-09-08_03_teacher_shell_refinement_design.md)를 구현했다.
+관련 171개 검사가 통과했고, [실제 대조](../experiments/R1_teacher_shell_refinement/README.md)의
+원본·독립 재실행은 N=20480/40960의 새 3,072 step을 각각 완료했다.
+기존 N=10240과 같은 513개 시각에서 정규화 속도 차이가 2.20620% → 0.612308% → 0.154044%로 감소해
+short 응답 기준을 통과했고 아래 full 검증으로 이어갔다.
+
+승인받은 [한 주기 전체 시간 refinement](sessions/2026-09-08_04_teacher_shell_full_refinement_design.md)를 구현했다.
+관련 184개 검사, N=20480/40960/81920의 143,360 step/run·독립 재실행과 전체 상태·반복 검산을 완료했다.
+[실제 결과](../experiments/R1_teacher_shell_full_refinement/README.md)의 정규화 속도 차이는
+6.05976% → 2.97472% → 0.868281%로 감소해 full 응답 기준을 통과했다.
+256 step마다 기록을 보존하며 학습 Teacher 채택과 공간·공력 등 R1 전체 수렴은 계속 별도 검증이 필요하다.
+
+[선형 공간 응답 검사](sessions/2026-09-08_05_teacher_shell_linear_spatial_design.md)의 구현·관련 228개 검사와
+두 run의 각 92,169 frame·전체 검산을 완료했다. n=8→16 속도 차이 22.7–23.2%, finest 방향 차이 최대 51.5%로
+공간·방향 기준은 실패했다. 고정 기준과 실패 결과를 보존했고 본 학습용 Teacher 채택은 계속 보류한다.
+
+이후 [개발용 샘플 추출·검증](sessions/2026-09-08_06_teacher_sample_dataset.md)을 완료했다.
+기존 Newton 경로로 바람 pulse·step-on/off·aero-off free decay 각 1초를 생성해 15개 window로 저장했다.
+새 검사 11개와 원본 대조·세 CPU replay·NumPy batch loading이 통과했다.
+[데이터 위치·읽기 예제·결과 그래프](../experiments/R1_teacher_sample_dataset/README.md)를 확인한다.
+`training_eligible=false`인 development 전용 자료이며 loader에는 `allow_development=True`가 필요하다.
+
+최신 작업은 [공간 수렴 보완](sessions/2026-09-08_07_teacher_spatial_remediation.md)이다.
+원래 checkerboard 곡률 stencil의 내부 힘 결함을 재현했고, 독립 B-spline 판과 P2/P3 삼각형 후보를 비교했다.
+P3의 부드러운 처방 압력 응답은 공간·방향·독립 기준 대조에서 1%를 통과했다.
+n=8→16 속도 차이는 최대 0.13638%, 시각 사이까지 포함한 상한은 0.52662%다.
+신규/회귀 99개 검사와 네 run의 재현성을 확인했다. [결과·그림·실행 명령](../experiments/R1_teacher_spatial_remediation/README.md)을 따른다.
+기존 x² 초기 상태의 속도 검사는 실패이며, 비선형 shell·실제 공력·새 backend의 dataset 연결은 아직 남아 있다.
 
 ## 구성
 
@@ -730,3 +789,142 @@ checkpoint를 남기며 기존 폴더를 덮어쓰거나 자동 재시도하지 
 원본을 연결한 비교 3개의 재계산도 일치했다. 공간 세분화의 속도 차이는 감소하지 않았고,
 시간 세분화의 마지막 속도 상대 RMS 차이는 11.41%, 자유감쇠 mesh 4→8은 193.25%였다.
 현재 모든 결과는 `convergence_status=not_assessed`다. [상세 검토와 compact evidence](../experiments/R1_teacher_smoke/README.md)를 보존했다.
+
+## Native bending mesh 의존성 감사
+
+`wind3dgs.evaluation.teacher_bending_audit`는 같은 flat-rest cloth의 quadratic 초기 변위를
+mesh 4/8/16/32에서 평가한다. NumPy만 사용하며 Newton/Warp simulation을 실행하지 않는다.
+다음 명령은 workspace root에서 실행한다. 출력은 새 폴더여야 하며 상대 경로는 `code/` 기준이다.
+
+```bash
+bash code/scripts/audit_teacher_bending.sh \
+  --resolutions 4 8 16 32 --width-m 1 --height-m 1 \
+  --amplitude-m 0.01 --edge-ke-n 10 \
+  --output ../experiments/artifacts/runs/teacher_bending_audit/my_new_run
+```
+
+- 입력: `TeacherBendingAuditSpec(resolutions, width_m, height_m, amplitude_m, edge_ke_n)`.
+  해상도는 정수 배수로 증가하는 2~8개 level, 축당 2~256이며 진폭은 0이 아닌 SI 값이다.
+- API: `audit_teacher_bending(spec)`는 새 report dict를, `write_teacher_bending_audit(spec, output_dir)`는
+  exclusive 새 폴더의 JSON/CSV/manifest/environment를 만든다. Package 루트 export나 기존 registry는 변경하지 않았다.
+- 에너지: 내부 edge에서 `E=0.5*edge_ke*rest_edge_length*theta²`, authored rest angle=0.
+  `evaluate_flat_rest_bending(mesh, positions_m, edge_ke_n=...)`로 같은 항을 직접 검사할 수 있다.
+- `energy_equivalent_stiffness_n_m=2E(A)/A²`는 이 변형 패턴의 에너지 등가 강성이다.
+  비선형 F(A)/A·접선 강성 또는 membrane을 포함한 전체 shell 강성이 아니다.
+- 반올림 전 field와 기존 Teacher float32 초기 상태를 분리하고, 실제 authored X 좌표의 strip 해석식과
+  기하학 계산을 대조한다. Native early-exit 범위의 퇴화 입력은 조용히 제외하지 않고 거부한다.
+- `report.json`, `levels.csv`, source hash를 담은 `environment.json`, 성공·실패 상태와 파일 hash의
+  `manifest.json`을 남긴다. `convergence_status=not_assessed`와 bending-only 제한을 유지한다.
+
+기본 1cm 변위에서 mesh 4→32의 에너지는 0.000374911→0.000060531 J,
+에너지 등가 강성은 7.498→1.211 N/m로 줄었다. 물리 계수 보정은 아직 수행하지 않았다.
+[계산식·정확한 결과·재현 기록](../experiments/R1_teacher_bending_audit/README.md)과
+[구현 session](sessions/2026-09-07_08_teacher_bending_audit.md)을 참고한다.
+
+후속 [bending 매핑 설계](sessions/2026-09-07_09_teacher_bending_mapping_design.md)는 N·m 단위의 재료 계수와
+rest edge 길이/인접 면적에 의한 환산을 분리한다. 이 후보는 한 방향의 강성이 0으로 가는 문제를
+줄이지만, 현재 삼각분할에서는 ±45도 굽힘의 선형화 에너지가 세분화 극한에도 3배 차이 나는
+반례가 있다. 기본 변형 검사기는 아래처럼 구현했고, 이 후보의 Teacher 연결과 Registry 확장은 후속 검토다.
+
+## Bending 매핑 후보의 기본 변형 검사
+
+`wind3dgs.evaluation.teacher_bending_mapping`은 rest 면적 가중 후보와 기존 native 에너지를
+7개 변형·두 대각선·두 곡률·mesh 4/8/16/32에서 비교한다. NumPy만 사용한다.
+Workspace root에서 다음 명령으로 실행한다. 두 계수는 별도 필수 입력이며 서로 자동 환산하지 않는다.
+
+```bash
+bash code/scripts/audit_teacher_bending_mapping.sh \
+  --hinge-bending-scale-n-m 1 --edge-ke-n 10 \
+  --resolutions 4 8 16 32 --width-m 1 --height-m 1 \
+  --curvatures-inv-m 0.000244140625 0.02 \
+  --output ../experiments/artifacts/runs/teacher_bending_mapping/my_new_run
+```
+
+- `TeacherBendingMappingSpec`: 필수 B_h [N·m]/native 계수 [N], 오름차순 해상도 2~4개,
+  W/H [m], 작은/유한 곡률 두 개 [1/m], 선택적 `poisson_ratio`를 소유한다.
+- `make_rest_area_bending_map(rest_positions_m, faces, *, hinge_bending_scale_n_m)`는
+  불변 `RestAreaBendingMap`을 반환한다. `k_e=B_h*l_rest/(A_left+A_right)`와 boundary 계수 0을 사용한다.
+- `evaluate_mapped_flat_bending(rest_positions_m, faces, positions_m, *, mapping)`는
+  binding을 검사하고 전체·edge 에너지와 각도를 계산한다. Rest는 flat에 한정한다.
+- `audit_teacher_bending_mapping(spec)`는 새 report dict를,
+  `write_teacher_bending_mapping_audit(spec, output_dir)`는 새 폴더의 JSON/CSV/environment/manifest와
+  한글 `run.log`를 만든다. 실패·중단 시 prefix를 보존하고 기존 폴더는 거부한다.
+- 해석식 오차와 float32 위치/계수 실현을 분리한다. `--poisson-ratio` 생략 시 ν가 필요한
+  continuum reference는 `null`이다. B_h를 plate rigidity D로 인정한 것은 아니다.
+
+기본 실행은 **112개 사례 계산 완료**, 후보의 **방향 검사 실패**다. 작은 곡률에서 mesh 32의
+±45도 에너지 비율은 2.9375001853이고, 대각선을 바꾸면 우세 방향이 바뀐다.
+CLI의 종료 코드 0은 계산 성공을 의미한다. Report의 `isotropic_cylinder_check`,
+`teacher_eligible=false`, `convergence_status=not_assessed`를 별도로 확인해야 한다.
+정확한 수치·진단 허용 오차·원본 및 재계산 명령은
+[실험 기록](../experiments/R1_teacher_bending_mapping/README.md)을 따른다.
+
+후속 [굽힘 모델 대안 설계·구현](sessions/2026-09-07_10_teacher_bending_alternatives_design.md)는
+대각선 교대 배치에도 남는 방향 차이를 해석하고, 아래 곡률 기반 기준 모델을 구현했다.
+
+## 곡률 기반 선형 판 굽힘 기준 모델
+
+`wind3dgs.evaluation.teacher_plate_reference`는 flat rest 주변 정점의 변위에서 곡률을 복원해
+판 굽힘 에너지·복원력·강성 작용을 계산한다. 작은 법선 변위의 NumPy 기준 모델이다.
+Workspace root에서 실행한다. D와 ν는 각각 명시해야 하며 출력은 새 폴더여야 한다.
+
+```bash
+bash code/scripts/audit_teacher_plate_reference.sh \
+  --plate-rigidity-n-m 1 --poisson-ratio 0.3 \
+  --resolutions 4 8 16 32 --width-m 1 --height-m 1 \
+  --curvature-inv-m 0.02 --amplitude-m 0.001 \
+  --output ../experiments/artifacts/runs/teacher_plate_reference/my_new_run
+```
+
+- `PlateBendingMaterial(plate_rigidity_n_m, poisson_ratio)`: 명시적 D [N·m]와 ν. Native 계수와 자동 환산하지 않는다.
+- `make_plate_bending_operator(rest_positions_m, faces, *, material)`: rest·재료·정책에 결합된
+  불변 `PlateBendingOperator`를 만든다. 각 중심 삼각형의 주변 patch에서 곡률을 복원한다.
+- `evaluate_plate_bending(operator, normal_displacement_m)`: 법선 변위 `(N,)` [m]에서 전체·삼각형별
+  에너지 [J], local 곡률 `(F,3)` [1/m], 복원력 `(N,)` [N]을 반환한다.
+- `apply_plate_bending_stiffness(operator, normal_displacement_m)`: dense 전역 행렬 없이 `K w`를 계산한다.
+- `audit_teacher_plate_reference(spec)`와 `write_teacher_plate_reference_audit(spec, output_dir)`는
+  정적 검사 결과와 JSON/CSV/environment/manifest·한글 로그를 제공한다. 실패·중단·부분 파일을 보존한다.
+
+세 삼각분할과 mesh 4/8/16/32에서 12방향 원통·twist/dome/saddle·quartic/sine을 계산한다.
+기본 한 run은 204개 사례다. ν=0/0.3의 **총 408개 사례**에서 quadratic·방향·영모드·일반 변형
+진단이 통과했다. 영모드는 n=4/8에서만 검사하며, 일반 변형의 최종 에너지 오차는 0.77% 이내였다.
+
+`completed`는 계산 완료, `candidate_check`는 지정된 개발 진단의 결과다.
+`teacher_eligible=false`, `convergence_status=not_assessed`를 유지한다.
+Newton 연결·큰 회전·실제 경계조건과 동역학 수렴 판정은 후속 단계다.
+정확한 조건·허용 오차·실패 사례·재계산 명령은 [실험 기록](../experiments/R1_teacher_plate_reference/README.md)을 따른다.
+
+## 3D shell 구조 에너지·힘·tangent
+
+`wind3dgs.teacher.shell_structure`는 flat rest mesh의 StVK 막 탄성과 현재 법선에 투영한
+곡률 굽힘을 함께 계산한다. E [Pa]·ν·h [m]를 명시하며 막 계수 `E h/(1−ν²)`와
+판 강성 `D=E h³/[12(1−ν²)]`를 유도한다. 기존 native 계수로 자동 환산하지 않는다.
+
+- `make_shell_structure(rest_positions_m, faces, *, material=ShellElasticMaterial(E, nu, h))`:
+  rest·재료·기존 판 곡률 stencil과 새 law/hash를 묶은 불변 model을 만든다.
+- `evaluate_shell_structure(model, positions_m)`: `energy_j`, `membrane_energy_j`, `bending_energy_j`와
+  각각의 전체 정점 힘 `force_n`, `membrane_force_n`, `bending_force_n`을 반환한다.
+  Face별 에너지·strain·곡률과 `current_rest_area_ratio`, 실제 `positions_dtype`도 반환한다.
+- `apply_shell_structure_tangent(model, positions_m, direction_m)`: 정확한 `H(x) direction` [N]을
+  계산한다. 힘 미분은 `−H`다. 현재 법선 및 막 응력의 기하학적 항을 포함하며 전역 dense 행렬은 만들지 않는다.
+
+위치와 방향은 유한한 float32/64 `(N,3)` SI 배열이며 내부 계산은 float64다.
+Model의 rest 배열과 stencil은 불변이다. Current 면적비는 `>1e-8`이어야 한다.
+Current 법선의 rest 대비 방향으로 rigid 회전을 거부하지 않는다.
+정확한 변형 상태 H의 음의 고유값을 제거하지 않는다. 영공간·반양정치 검사는 flat rest에서만 한다.
+고정점의 힘을 제거하거나 solver step을 수행하지 않는다.
+
+Workspace root에서 다음을 실행한다. E·ν·h는 필수 인자이고 결과는 새 폴더에 저장된다.
+
+```bash
+bash code/scripts/audit_teacher_shell_structure.sh \
+  --young-modulus-pa 1000000 --poisson-ratio 0.3 --thickness-m 0.001 \
+  --resolutions 4 8 16 32 --curvatures-times-length 0.2 0.6 \
+  --output ../experiments/artifacts/runs/teacher_shell_structure/my_new_run
+```
+
+`TeacherShellStructureSpec`은 재료·격자 ladder·영역 크기·무차원 곡률을 식별한다.
+`audit_teacher_shell_structure`는 계산 결과를 반환하고, `write_teacher_shell_structure_audit`는
+report·CSV·environment·manifest와 한글 로그를 저장한다. 계산의 `completed`와 진단의
+`candidate_check`를 분리하고 실패·중단·부분 파일도 보존한다. `teacher_eligible=false`,
+`convergence_status=not_assessed`다. 정확한 조건과 실패 해석은 위 실험 기록을 따른다.
