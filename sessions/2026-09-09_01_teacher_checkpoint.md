@@ -4,9 +4,8 @@
 
 Wind3DGS code-side. 사용자는 이 채팅에서 진행한 전체 작업을 문서/Git에 보존하고,
 인수인계뿐 아니라 아이디어 스케치에 구체적인 구현·실험과 차이를 모두 반영하도록 요청했다.
-논문 작성용 [통합 연구 기록](../../ideas/development/r1_teacher_implementation_record.tex) /
-[PDF](../../ideas/development/r1_teacher_implementation_record.pdf)와
-[R1 명세](../../ideas/development/r1_teacher_probe_oracle.tex)를 함께 갱신한다.
+논문 작성용 [R1 통합 문서](../../ideas/development/r1_teacher_probe_oracle.tex) /
+[PDF](../../ideas/development/r1_teacher_probe_oracle.pdf)에 실행 명세와 근거를 함께 보존한다.
 
 **개발용 sample 15개는 생성·검증 완료다. Accepted 학습 Teacher와 R1 전체는 미완료다.**
 P3 선형 판의 처방 압력 공간/방향/독립 spline 비교는 연속 시간 상계를 포함해 고정 1%를 통과했다.
@@ -91,3 +90,9 @@ Index에서는 Teacher 항목만 부분 stage한다. Root의 기존 변경은 �
 3. 첫 accepted 데이터의 입력 범위는 사용자 선택이 남아 있다. 기존 displaced free-decay를 답변 없이 제외하지 않는다.
 4. Accepted source/producer와 split, independent GS/common mask/oracle/transport/spectrum을 닫아 R1 종료를 판정한다.
 5. 기존 15개 development sample은 그대로 보존하고 새 accepted 데이터와 identity를 분리한다.
+
+## 후속: 구현 기록의 R1 본문 통합
+
+사용자 요청에 따라 별도 구현 기록을 R1의 관련 절에 흡수하고 README·이 기록의 링크를 단일 R1 문서로 갱신했다.
+수식은 해당 절에서 직접 갱신하며 변경 이유와 실험 근거를 인접 설명·주석에 남긴다.
+이번 후속 변경은 문서 참조만 수정했으며 구현 source, 원본 artifact와 실험 판정은 유지했다.

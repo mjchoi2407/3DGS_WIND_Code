@@ -9,8 +9,8 @@ Wind3DGS 프로젝트의 재사용 구현 workspace다.
 현재 방법과 구현 체크리스트는 `../ideas/README.md`에서 찾는다. 현재 learned-response 방법의 개발 순서와 완료 기준은 `../ideas/development/`의 R0--R7 문서가 소유한다. 기존 TD00 계약·저장소 거버넌스 구현과 `TD##` 기록, M01--M04 module은 재사용 후보·baseline·fixture 또는 offline support이며, 현행 R-stage 완료 증거로 자동 승계하지 않는다.
 
 새 작업은 [2026-09-09 누적 checkpoint](sessions/2026-09-09_01_teacher_checkpoint.md)에서 이어받는다.
-이 채팅의 전체 구현 계보와 다음 작업을 정리했고, 논문 작성용 [Teacher 연구 기록](../ideas/development/r1_teacher_implementation_record.tex) /
-[PDF](../ideas/development/r1_teacher_implementation_record.pdf)에 수식·실패·수치·재현 근거를 연결했다.
+이 채팅의 전체 구현 계보와 다음 작업을 정리했고, 논문 작성용 [R1 명세·구현 기록](../ideas/development/r1_teacher_probe_oracle.tex) /
+[PDF](../ideas/development/r1_teacher_probe_oracle.pdf)에 수식·실패·수치·재현 근거를 연결했다.
 **개발 sample 15개 생성·검증은 완료했지만 본 학습 Teacher는 미승인이다.** P3 처방 압력의 공간·방향·기준 비교는
 통과했고 원래 x² 초기 속도 수렴은 실패 상태다. 아래는 단계별 당시 결과이며 최신 판정은 checkpoint를 따른다.
 기능별 전체 기록은 [sessions index](sessions/README.md)에 있다.
