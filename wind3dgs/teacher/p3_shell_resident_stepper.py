@@ -17,14 +17,15 @@ from . import p3_shell_warp_kernels as aero_kernels
 
 class ResidentShellStepper:
     def __init__(self,model,displacement,velocity,wind,*,policy=None,dt=1/3840,
-                 linear_cap=1e-4,rebuild_every=64,switch_iterations=32,device='cuda:0'):
+                 linear_cap=1e-4,rebuild_every=64,switch_iterations=32,device='cuda:0',operators=None,
+                 gmres_factory=ResidentGMRES):
         self.model=model;self.device=wp.get_device(device);self.dt=dt;self.coef=.25*dt*dt
         self.policy=policy or ShellSolvePolicy(linear_restart=240,linear_cycles=3)
         self.linear_cap=linear_cap;self.rebuild_every=rebuild_every;self.switch_iterations=switch_iterations
         self.nodes=len(model.rest_positions);self.nfull=self.nodes*3
         ids=np.flatnonzero(np.repeat(model.free,3)).astype(np.int32);self.n=len(ids)
         self.ids=wp.array(ids,dtype=wp.int32,device=self.device)
-        self.ops=ResidentShellOperators(model,device=self.device)
+        self.ops=operators if operators is not None else ResidentShellOperators(model,device=self.device)
         self.c=wp.zeros(17,dtype=wp.int32,device=self.device);self.s=wp.zeros(9,dtype=wp.float64,device=self.device)
         self.trial_s=wp.zeros_like(self.s);self.failure=wp.zeros(1,dtype=wp.int32,device=self.device)
         self.accept=wp.zeros(1,dtype=wp.int32,device=self.device)
@@ -54,7 +55,7 @@ class ResidentShellStepper:
         self.operator=LinearOperator(M.shape,wp.float64,self.device,self.action)
         self.coloring=ResidentColoring(K,self.current.matrix,self.operator,self.failure)
         self.preconditioner=LinearOperator(M.shape,wp.float64,self.device,self.precondition)
-        self.gmres=ResidentGMRES(self.operator,self.preconditioner,self.rhs,self.delta,self.tolerance,
+        self.gmres=gmres_factory(self.operator,self.preconditioner,self.rhs,self.delta,self.tolerance,
                                  restart=self.policy.linear_restart,cycles=self.policy.linear_cycles)
         wp.load_module(module=k,device=self.device);wp.load_module(module=resident_aero,device=self.device)
         # 모든 kernel compilation과 graph 제출 준비는 초기화에서 수행한다.

@@ -3,10 +3,10 @@ from contextlib import contextmanager
 import warp as wp
 from . import resident_gmres as g
 
-@contextmanager
-def reuse_first_preconditioned_rhs():
-    original=g.ResidentGMRES._cycle
-    def cycle(self):
+class ReusingResidentGMRES(g.ResidentGMRES):
+    """전역 monkey patch 없이 인스턴스별로 첫 RHS 적용을 재사용한다."""
+
+    def _cycle(self):
         # __call__에서 w=M^-1 b와 mn=||w||²를 이미 계산했다.
         # 첫 cycle은 r=b. restart에서는 r이 달라지므로 반드시 다시 적용한다.
         def restarted():
@@ -21,6 +21,10 @@ def reuse_first_preconditioned_rhs():
         self.A.matvec(self.x,self.b,self.r,alpha=-1.,beta=1.)
         self.inner_product(self.r,self.r,out=self.dot)
         self.launch(g.cycle_end,[self.c,self.s,self.dot,self.cycles])
-    g.ResidentGMRES._cycle=cycle
+
+@contextmanager
+def reuse_first_preconditioned_rhs():
+    original=g.ResidentGMRES._cycle
+    g.ResidentGMRES._cycle=ReusingResidentGMRES._cycle
     try:yield
     finally:g.ResidentGMRES._cycle=original

@@ -43,18 +43,34 @@ class DeviceTimings:
         self.stack = []
         wp.load_module(module=__name__, device=device)
 
-    @contextmanager
-    def region(self, name):
-        path = '/'.join([*self.stack, name])
+    def _slot(self, path):
         slot = self.paths.setdefault(path, len(self.paths))
         if slot >= len(self.start):
             raise RuntimeError('GPU 계측 슬롯 부족')
+        return slot
+
+    @contextmanager
+    def region(self, name):
+        path = '/'.join([*self.stack, name])
+        slot = self._slot(path)
         wp.launch(begin, dim=1, inputs=[self.start, slot], device=self.device)
         self.stack.append(name)
         try:
             yield
         finally:
             self.stack.pop()
+            wp.launch(end, dim=1, inputs=[self.start, self.total, self.counts, slot], device=self.device)
+
+    @contextmanager
+    def root_region(self, name):
+        """하위 path 이름을 바꾸지 않는 graph 전체 보정용 구간."""
+        if self.stack:
+            raise RuntimeError('GPU root 계측은 다른 구간 안에서 시작할 수 없습니다')
+        slot = self._slot(name)
+        wp.launch(begin, dim=1, inputs=[self.start, slot], device=self.device)
+        try:
+            yield
+        finally:
             wp.launch(end, dim=1, inputs=[self.start, self.total, self.counts, slot], device=self.device)
 
     def reset(self):
@@ -68,8 +84,10 @@ class DeviceTimings:
             rows.append({'path': path, 'calls': int(counts[slot]),
                          'inclusive_s': float(total[slot])*1e-9,
                          'exclusive_s': (float(total[slot])-sum(float(total[s]) for s in children))*1e-9})
-        return {'clock': 'PTX globaltimer, ns', 'scope': '적분·공력, 초기 준비 제외',
-                'interpretation': '중첩 inclusive 시간은 합산 금지. exclusive에도 marker·scheduling 비용 포함.',
+        return {'clock': 'PTX globaltimer raw tick × 1e-9 before per-frame calibration',
+                'scope': '적분·공력, 초기 준비 제외',
+                'interpretation': ('장치별 tick 환산은 바깥 frame marker와 host wall로 보정한다. '
+                                   '중첩 inclusive 시간은 합산 금지. marker·scheduling 비용 포함.'),
                 'regions': rows}
 
 @contextmanager

@@ -1196,6 +1196,10 @@ GPU hi/lo와 CPU longdouble의 합산·LU 순서가 달라 bitwise 일치를 요
 
 ## GPU 솔버 설계·최적화 재사용
 
+선택적 CPU 셀프 컬리전의 설치·API·검증 범위는 [P3 접촉 기준 후보](p3_self_contact.md)를 따른다.
+접촉 전 단계 GPU 구현과 세 씬 실행기는 [P3 GPU 셀프 컬리전](p3_gpu_self_contact.md)을 따른다.
+이 경로는 현행 GPU/Gauss 실행에 자동 적용되지 않는다.
+
 새 구현은 [GPU 솔버 구현 기준](gpu_solver_design.md)을 먼저 따른다. 원시 API 사용법과 별도로 버퍼 수명·캐시 무효화·정밀도·검산·성능 비교 범위를 정리했다.
 
 `teacher_precision_compare --suite adaptive --correction-budget 4`는 별도 동결 runtime에서

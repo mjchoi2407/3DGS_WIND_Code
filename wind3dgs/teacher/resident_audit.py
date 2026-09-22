@@ -55,7 +55,7 @@ def device_graph_inventory(graph, *, conditional_bodies=()):
 class AuditForce(ResidentShellOperators):
     def __init__(self, model, *, device='cuda:0'):
         super().__init__(model, device=device)
-        capacity = max(len(model.triangles), *(len(p) for p in self.edge_partial))
+        capacity = max([len(model.triangles), *(len(p) for p in self.edge_partial)])
         self.reduce = ParallelReductions(capacity, self.device)
 
     def evaluate(self, u_hi, u_lo):
@@ -86,7 +86,7 @@ class AuditForce(ResidentShellOperators):
 
 
 class ResidentAudit:
-    def __init__(self, model, *, steps, substeps, dt, forces, balances, policy, chunk_steps=64, device='cuda:0', compare_reference=True, geometry_policy='projected_injectivity'):
+    def __init__(self, model, *, steps, substeps, dt, forces, balances, policy, chunk_steps=64, device='cuda:0', compare_reference=True, geometry_policy='projected_injectivity',force_operator=None):
         from .local_geometry_certificate import POLICIES, LOCAL
         if geometry_policy not in POLICIES:
             raise ValueError('지원하지 않는 기하 검산 정책')
@@ -103,7 +103,8 @@ class ResidentAudit:
             raise ValueError('외력·에너지 기록 shape 오류')
         def array(value, dtype=wp.float64): return wp.array(np.ascontiguousarray(value), dtype=dtype, device=self.device)
         def zeros(shape, dtype=wp.float64): return wp.zeros(shape, dtype=dtype, device=self.device)
-        self.force = AuditForce(model,device=self.device); self.bounds = ResidentAuditBounds(model,self.device)
+        self.force = force_operator if force_operator is not None else AuditForce(model,device=self.device)
+        self.bounds = ResidentAuditBounds(model,self.device)
         self.mass = ResidentCSR(kron(model.mass, eye(3), format='csr'),device=self.device)
         ids = np.flatnonzero(np.repeat(model.free,3)).astype(np.int32)
         free_index = np.full(self.n,-1,dtype=np.int32); free_index[ids] = np.arange(len(ids),dtype=np.int32)
@@ -146,6 +147,13 @@ class ResidentAudit:
     def _step(self):
         self._body()
 
+    def _capture_step(self):
+        from .resident_capture_audit import track_conditional_bodies
+        with track_conditional_bodies() as bodies:
+            with wp.ScopedCapture(device=self.device) as capture: self._step()
+            self.graph = capture.graph
+        self.graph_inventory = device_graph_inventory(self.graph,conditional_bodies=bodies)
+
     def _body(self):
         self.launch(k.load_state,[self.data,self.index,0,*self.state0],self.n)
         self.launch(k.load_state,[self.data,self.index,1,*self.state1],self.n)
@@ -184,9 +192,7 @@ class ResidentAudit:
         self.index.assign(np.array([0,self.submitted],dtype=np.int32))
         if self.graph is None:
             self._initialize()
-            with wp.ScopedCapture(device=self.device) as capture: self._step()
-            self.graph = capture.graph
-            self.graph_inventory = device_graph_inventory(self.graph)
+            self._capture_step()
         return count
 
     def upload_device(self, actual, *, origin_s=0.):
@@ -199,8 +205,7 @@ class ResidentAudit:
         self.launch(k.device_window,[self.index,self.times,self.submitted,wp.float64(self.dt),wp.float64(origin_s)],count+1)
         if self.graph is None:
             self._initialize()
-            with wp.ScopedCapture(device=self.device) as capture: self._step()
-            self.graph = capture.graph; self.graph_inventory = device_graph_inventory(self.graph)
+            self._capture_step()
         return count
 
     def submit(self,count):

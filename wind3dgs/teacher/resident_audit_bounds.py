@@ -3,6 +3,7 @@ import numpy as np
 import warp as wp
 from .p3_shell_bounds import P3ShellBounds
 from .resident_audit_kernels import reduce_max
+from .p3_shell_warp_precision_kernels import pair_add,pair_scale
 
 wp.set_module_options({'enable_backward': False, 'fast_math': False, 'fuse_fp': False})
 
@@ -14,13 +15,13 @@ def controls(u0: wp.array(dtype=wp.float64), ul0: wp.array(dtype=wp.float64),
              ids: wp.array2d(dtype=wp.int32), dt: wp.float64, local: wp.array4d(dtype=wp.float64),
              maxima: wp.array2d(dtype=wp.float64), bad: wp.array(dtype=wp.int32)):
     e, t, p = wp.tid(); n = p//3; c = p%3; j = 3*ids[e, n]+c; origin = 3*ids[e, 0]+c
-    x = u0[j]+ul0[j]; base = u0[origin]+ul0[origin]
+    value_pair = pair_add(wp.vec2d(u0[j],ul0[j]),-wp.vec2d(u0[origin],ul0[origin]))
     if t == 1:
-        x = x+wp.float64(.5)*dt*(v0[j]+vl0[j])
-        base = base+wp.float64(.5)*dt*(v0[origin]+vl0[origin])
+        velocity_pair=pair_add(wp.vec2d(v0[j],vl0[j]),-wp.vec2d(v0[origin],vl0[origin]))
+        value_pair=pair_add(value_pair,pair_scale(velocity_pair,wp.float64(.5)*dt))
     elif t == 2:
-        x = u1[j]+ul1[j]; base = u1[origin]+ul1[origin]
-    value = x-base; local[e, t, n, c] = value
+        value_pair=pair_add(wp.vec2d(u1[j],ul1[j]),-wp.vec2d(u1[origin],ul1[origin]))
+    value = value_pair[0]+value_pair[1]; local[e, t, n, c] = value
     maxima[(e*3+t)*30+p, 0] = wp.abs(value)
     if not wp.isfinite(value): wp.atomic_max(bad, 0, 1)
 

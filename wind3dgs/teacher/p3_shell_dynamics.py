@@ -71,10 +71,17 @@ class P3ShellStepper:
     def _solve_factor(self,factor,rhs):
         return factor.solve(rhs)
 
-    def __init__(self, model, *, policy=None):
+    def __init__(self, model, *, policy=None, contact=None):
         if type(model) is not P3Shell: raise ValueError('P3Shell 모델이 필요합니다')
         self.model=model; self.policy=policy or ShellSolvePolicy()
         if type(self.policy) is not ShellSolvePolicy: raise ValueError('ShellSolvePolicy가 필요합니다')
+        self.contact = contact
+        if contact is not None:
+            from .p3_shell_contact import P3ShellContact
+            if type(contact) is not P3ShellContact or contact.model is not model:
+                raise ValueError('같은 P3Shell에 연결한 P3ShellContact가 필요합니다')
+            if self.policy.linear_preconditioner != 'rest':
+                raise ValueError('접촉 기준 경로는 rest preconditioner만 지원합니다; shell coloring은 비국소 접촉에 부적합합니다')
         free=model.free
         self.mass_free=model.mass[free][:,free].tocsc()
         self.mass_factor=splu(self.mass_free)
@@ -90,7 +97,19 @@ class P3ShellStepper:
         if not np.isfinite(time_s) or time_s < 0 or np.any(u[~m.free] != 0) or np.any(v[~m.free] != 0):
             raise ValueError('시간·고정 자유도 초기 상태가 잘못되었습니다')
         m.evaluate_displacement(u)
+        if self.contact is not None: self.contact.validate_state(u)
         return self._make_state(u,v,time_s)
+
+    def _internal(self, u, *, direction=None):
+        result = self.model.evaluate_displacement(u, direction=direction)
+        if self.contact is not None:
+            contact = self.contact.evaluate(u)
+            result['energy_j'] += contact['energy_j']
+            result['force_n'] = result['force_n']+contact['force_n']
+            result['contact'] = {k: v for k, v in contact.items() if k not in ('force_n', 'hessian')}
+            if direction is not None:
+                result['hvp_n'] = result['hvp_n']+self.contact.hvp(u, direction)
+        return result
 
     def reset_velocity(self, state):
         self._validate_state(state)
@@ -117,7 +136,8 @@ class P3ShellStepper:
         c=.25*dt*dt
         if not np.isfinite(c) or c <= np.finfo(float).tiny: raise ValueError('dt 제곱이 유효하지 않습니다')
         u0,v0=state.displacement_m,state.velocity_m_s
-        initial=m.evaluate_displacement(u0)
+        if self.contact is not None: self.contact.validate_state(u0)
+        initial=self._internal(u0)
         a0=np.zeros_like(u0); a0[free]=self._solve_factor(self.mass_factor,(force+initial['force_n'])[free])
         a=a0.copy(); attempts=[]; hvps=0
         if p.linear_preconditioner=='rest' and dt not in self.preconditioners:
@@ -132,7 +152,7 @@ class P3ShellStepper:
 
         def evaluate(acceleration, displacement):
             u=displacement; u[~free]=0.
-            elastic=m.evaluate_displacement(u)
+            elastic=self._internal(u)
             residual=m.mass@acceleration-elastic['force_n']-force
             norm=float(np.linalg.norm(residual[free]))
             scale=max(np.linalg.norm((m.mass@acceleration)[free]),np.linalg.norm(force[free]),
@@ -143,6 +163,14 @@ class P3ShellStepper:
         # Newton의 위치·가속도 수정은 같은 양을 함께 누적한다. 매번 큰 u0에서
         # 위치를 재구성하면 극소 수정이 다른 반올림 경계를 넘어 잔차가 정체한다.
         u=u0+(dt*v0+c*(a0+a)); u[~free]=0.
+        if self.contact is not None:
+            # Predictor도 barrier의 정의역 안에서 시작해야 한다. 같은 alpha로
+            # 위치와 가속도를 조정해 원래 Newmark 관계를 유지한다.
+            alpha = self.contact.collision_free_stepsize(u0, u)
+            if alpha < 1:
+                u = u0+alpha*(dt*v0+2*c*a0)
+                a = a0+(alpha-1)*(dt/c*v0+2*a0)
+                u[~free] = 0.
         # 서로 상쇄된 Newton 수정도 실제 수행한 연산의 반올림 오차에 기여한다.
         # 최종 a의 크기만 사용하면 거의 0인 성분의 오차 한도를 과소평가한다.
         acceleration_path=np.abs(a).copy()
@@ -158,7 +186,7 @@ class P3ShellStepper:
                 def action(vector):
                     nonlocal hvps
                     d=np.zeros_like(u); d[free]=vector.reshape(-1,3)
-                    H=m.evaluate_displacement(u,direction=d)['hvp_n']; hvps+=1
+                    H=self._internal(u,direction=d)['hvp_n']; hvps+=1
                     return (m.mass@d+c*H)[free].ravel()
                 A=LinearOperator(self.M.shape,matvec=action,dtype=float)
                 if p.linear_preconditioner=='current':
@@ -185,8 +213,13 @@ class P3ShellStepper:
                 # Residual와 새 Newton correction 모두 작으면 반복 종료한다.
                 if norm <= limit and last_correction <= correction_limit: break
                 searches=[]; entry['line_search']=searches
+                max_alpha = 1.
+                if self.contact is not None:
+                    max_alpha = self.contact.collision_free_stepsize(u, u+c*delta)
+                    entry['ccd_alpha'] = max_alpha
+                    if max_alpha <= 0: raise ShellStepFailed('contact_ccd_zero_step', attempts)
                 for step in range(p.line_search_steps):
-                    alpha=2.**-step
+                    alpha=max_alpha*2.**-step
                     try:
                         trial_u=u+alpha*(c*delta)
                         _,_,_,new_norm,_=evaluate(a+alpha*delta,trial_u)
@@ -208,16 +241,26 @@ class P3ShellStepper:
                 raise ShellStepFailed('position_update_roundoff',attempts)
             v=v0+.5*dt*(a0+a); v[~free]=0.
             if not np.isfinite(v).all() or norm > limit: raise ShellStepFailed('final_residual',attempts)
+            if self.contact is not None:
+                self.contact.validate_state(u)
+                trajectory = self.contact.certify_trajectory(u0, v0, u, dt)
+                if not trajectory['certified']:
+                    attempts.append({'contact_trajectory': trajectory})
+                    raise ShellStepFailed('contact_time_trajectory_uncertified', attempts)
         except ShellStepFailed: raise
         except (ValueError,RuntimeError) as error: raise ShellStepFailed(str(error),attempts) from error
         new_state=self._make_state(u,v,state.time_s+dt)
         work=float(np.sum(force*(u-u0)))
         change=elastic['energy_j']+self.kinetic_energy(v)-initial['energy_j']-self.kinetic_energy(v0)
         reaction=residual.copy(); reaction[free]=0.
-        return new_state,{'attempts':attempts,'newton_corrections':iteration,'hvp_calls':hvps,
+        diagnostics={'attempts':attempts,'newton_corrections':iteration,'hvp_calls':hvps,
             'force_residual_n':norm,'force_limit_n':float(limit),'external_work_j':work,
             'energy_balance_residual_j':float(change-work),'constraint_reaction_n':reaction,
             'fixed_normal_torque_on_shell_n_m':elastic['fixed_normal_torque_on_shell_n_m'],
             'energy_j':elastic['energy_j']+self.kinetic_energy(v),
             'max_strain_component':elastic['max_strain_component'],'min_area_ratio':elastic['min_area_ratio'],
             'max_normal_jump':elastic['max_normal_jump'],'max_boundary_normal_jump':elastic['max_boundary_normal_jump']}
+        if self.contact is not None:
+            diagnostics['contact'] = dict(elastic['contact'], trajectory=trajectory,
+                                          compute_dtype='float64', broad_phase=self.contact.policy.broad_phase)
+        return new_state, diagnostics

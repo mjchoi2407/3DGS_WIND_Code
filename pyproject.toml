@@ -24,6 +24,15 @@ teacher = [
   "PyYAML>=6,<7",
   "scipy>=1.10,<2",
 ]
+teacher-contact = [
+  "PyYAML>=6,<7",
+  "scipy>=1.10,<2",
+  "ipctk==1.6.0",
+]
+teacher-contact-samples = [
+  "wind3dgs[teacher-contact]",
+  "matplotlib>=3.9,<4",
+]
 teacher-gpu = [
   "PyYAML>=6,<7",
   "scipy>=1.10,<2",

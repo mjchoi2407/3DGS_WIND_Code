@@ -18,9 +18,11 @@ def ready(failure:wp.array(dtype=wp.int32),enabled:wp.array(dtype=wp.int32)):
 def stop_on_audit(flags:wp.array(dtype=wp.int32),start:int,count:int,first_bad:wp.array(dtype=wp.int32),
                   failure:wp.array(dtype=wp.int32),enabled:wp.array(dtype=wp.int32)):
     i=wp.tid()
+    # Solver 오류(1--10)를 audit의 일반 코드99로 덮지 않는다. 실패 frame의 미완료
+    # trace에서 파생된 audit flag는 진단용으로 남지만 복구 분기는 원래 solver code를 본다.
     if enabled[0]!=0 and flags[start+i]!=0:
         wp.atomic_min(first_bad,0,start+i)
-        wp.atomic_max(failure,0,99)
+        wp.atomic_cas(failure,0,0,99)
 
 @wp.kernel
 def stop_on_audit_masked(flags:wp.array(dtype=wp.int32),start:int,count:int,first_bad:wp.array(dtype=wp.int32),
@@ -28,4 +30,4 @@ def stop_on_audit_masked(flags:wp.array(dtype=wp.int32),start:int,count:int,firs
     i=wp.tid()
     if enabled[0]!=0 and (flags[start+i]&mask)!=0:
         wp.atomic_min(first_bad,0,start+i)
-        wp.atomic_max(failure,0,99)
+        wp.atomic_cas(failure,0,0,99)

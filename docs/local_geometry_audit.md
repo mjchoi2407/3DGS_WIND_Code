@@ -1,5 +1,8 @@
 # 큰 회전용 국소 기하 검산
 
+접촉 경로의 후속 [정밀 기하 인증](refined_metric_certificate.md)은 아래 scalar 검사가 실패한
+영역만 GPU에서 다시 검사한다. 기존 정책의 의미와 역사적 결과는 변경하지 않는다.
+
 `ResidentAudit(..., geometry_policy='local_metric')`는 기존 투영 단사성 인증 대신
 국소 비퇴화 인증을 flag16의 판정에 사용한다. 기본 `projected_injectivity`는 기존 동작을 보존한다.
 두 정책 모두 FP64 hi/lo 물리 풀이와 독립 힘·위치·에너지·고정점·비유한 검사를 유지한다.
