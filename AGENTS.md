@@ -1,67 +1,36 @@
 # Wind3DGS Code Instructions
 
-This is the code-focused repository inside the Wind3DGS project workspace.
-
-Project-specific topic: CG + AI research on wind-driven deformable 3D Gaussian Splatting.
-
-Project tag for conversation/session tracking: `Wind3DGS`.
-
-## 기록 언어 규칙
-
-- 2026-06-27부터 새로 작성하거나 갱신하는 코드-side 기록은 한국어를 기본 언어로 쓴다.
-- 적용 대상은 `README.md`, `sessions/` 기록, 개발 로그, 검증 기록, 스크립트가 직접 남기는 설명성 로그와 상태 메시지를 포함한다.
-- 명령어, 파일 경로, 코드 식별자, API 이름, 논문/라이브러리의 공식 영문 명칭은 원문을 유지한다.
-- 외부 도구가 출력한 에러 메시지, 테스트 로그, 라이브러리 로그처럼 원문 보존이 필요한 출력은 번역하지 않아도 된다. 다만 사람이 덧붙이는 요약과 해석은 한국어로 쓴다.
-- 사용자가 명시적으로 영어 기록이나 논문 제출용 영문 문구를 요청한 경우에만 영어를 사용한다.
-- 기존 영문 기록은 별도 요청이 없는 한 소급 번역하지 않는다.
-
-Sibling work folders:
-
-- `../code`: reusable implementation, configs, scripts, dependencies, and code-side session notes
-- `../ideas`: canonical research index, current sketch, checklist, bibliography, archived prior ideas, and idea-side session notes
-- `../experiments`: experiment READMEs, assets, outputs, reports, wrappers, and experiment-side session notes
+Wind3DGS의 code 독립 저장소다. 공통 지침은 [`../AGENTS.md`](../AGENTS.md)를 적용한다.
+상위 지침이 자동 로드되지 않은 하위 저장소 단독 실행에서도 직접 확인한다. 이미 확인한 내용은 반복 출력하지 않는다.
+공통 언어·기록·Git·보안·LaTeX 규칙을 이 파일에 복제하지 않는다.
 
 ## Startup Protocol
 
-At the start of every meaningful task:
+- 공통 시작 절차에 따라 `README.md`, `sessions/README.md`의 최신 요약을 확인한다.
+- GPU solver 신규 구현·성능 변경 시 [GPU 실행 선택 계약](docs/gpu_runtime_selection.md)과 [GPU 솔버 구현 기준](docs/gpu_solver_design.md)을 먼저 읽고, 관련 최적화의 적용 조건·캐시 무효화·검산·측정 범위를 설계와 검증에 반영한다. 현행 시각 확인 전용 기하 예외를 새 솔버의 일반 기준으로 승계하지 않는다.
+- API 작업은 `docs/usage.md`의 관련 절만, dependency/설치 작업은 `pyproject.toml`을 확인한다.
+- M01–M03 legacy viewer 호환 작업에서만 `requirements.txt`와 `requirements/legacy-viewer-py312.txt`를 함께 확인한다.
+- 연구 계약은 `../ideas/README.md`의 해당 R 절, 실험 의존성은 해당 experiment README/report/config만 읽는다.
 
-1. Read `../AGENTS.md`, `../README.md`, and this `AGENTS.md`.
-2. Check local code-side records:
-   - `README.md`
-   - `requirements.txt`
-   - `sessions/README.md`
-3. If the task depends on research direction or milestones, read `../ideas/README.md` and the current documents indexed there.
-4. If the task depends on an experiment, check the active README under `../experiments/`.
+## 구현 범위와 승인
 
-## 새 채팅 초기화 규칙
+- 요청한 목표를 검토·검증 가능한 기능 단위로 나누되, 승인된 범위의 구현·버그 수정·리팩터링·필요한 검증은 재승인 없이 완료한다. 매 기능마다 같은 설계 양식을 반복하지 않는다.
+- 연구 방향, 주요 public interface/schema, dependency 전략, 완료 기준 또는 큰 계산 비용·산출물 범위가 요청 범위를 벗어나 바뀔 때만 영향과 선택지를 짧게 제시해 결정받는다. 명시적으로 선택을 기다리는 항목은 임의 확정하지 않는다.
+- 변경에 필요한 검증을 실행한다. 문구·링크 수정에 구현을 그대로 따라 쓰는 테스트를 새로 만들지 않는다. 변경·실패·남은 의문이 없으면 같은 전체 테스트를 반복하지 않는다.
 
-대화 이력이 비어 있는 새 Codex 채팅에서 첫 의미 있는 작업을 시작할 때만 다음 초기화를 수행한다. 같은 대화 중간이나 이미 맥락을 확인한 뒤에는 반복하지 않는다.
+## Dependency Policy
 
-1. 이 repo가 Wind3DGS 프로젝트의 code-side repo임을 확인한다. 특히 전체 연구 테마가 `CG + AI research on wind-driven deformable 3D Gaussian Splatting`임을 확인한다.
-2. 현재 날짜 기준 최근 3일의 session 기록을 확인한다. 우선 `sessions/`를 보고, 작업이 연구 방향이나 실험과 연결되면 `../ideas/sessions/`, `../experiments/sessions/`도 날짜와 번호 순서대로 훑는다.
-3. 최근 3일 안에 session 기록이 없거나 작업 맥락이 부족하면, 관련 session 폴더에서 가장 최근 날짜의 기록을 추가로 확인한다.
-4. 확인한 연구 테마, 최근 작업 흐름, 현재 code-side 작업 범위를 짧게 내부 정리한 뒤 일반 Startup Protocol을 이어간다.
-
-## Working Loop
-
-1. Implement reusable modules under `wind3dgs/`.
-2. Keep experiment-specific wrappers, outputs, and reports under `../experiments/`.
-3. Keep research framing, checklist, bibliography, and prior-direction archives under `../ideas/`.
-4. Record code-side work history in `sessions/`.
+- 사람이 편집하는 package metadata와 새 TD dependency의 유일한 source of truth는 `pyproject.toml`이다.
+- 새 dependency는 용도에 맞는 core dependency 또는 optional dependency group에 추가한다.
+- `requirements.txt`와 `requirements/legacy-viewer-py312.txt`는 보존된 M01--M03 legacy viewer 환경용 호환 진입점이다. 새 TD dependency를 이 파일에만 추가하지 않는다.
+- 설치 또는 dependency 변경 후에는 영향 범위에 맞는 import, unit test, build 또는 smoke test로 검증한다.
 
 ## Editing Rules
 
-- Preserve existing user files unless explicitly asked to reorganize them.
-- Keep reusable implementation in `wind3dgs/`.
-- Do not put new reusable implementation directly under `../experiments/`.
-- When code changes support an experiment, document the experiment-side usage in the relevant `../experiments/<name>/README.md`.
-- After meaningful code work, record commands, verification, blockers, and next steps in `sessions/`.
+- 재사용 구현은 `wind3dgs/`, API 사용법은 `docs/usage.md`에 둔다. 실험 사용법은 해당 experiments README를 연결하고 결과를 복제하지 않는다.
+- 구현 변경의 계약·검증·남은 문제는 code session에 짧게 기록한다. 공통 기록 기준을 따른다.
 
 ## Session Tracking
 
-- Start substantial new conversations with a prefix like `[Wind3DGS | code]` or `[Wind3DGS | code | TD00]`.
-- At the end of meaningful code work, create or update a note under `sessions/`.
-- Name new session notes as `YYYY-MM-DD_NN_short_topic.md`, where `NN` is the next two-digit sequence for that date inside `code/sessions/`.
-- Keep numbering independent from `../ideas/sessions/` and `../experiments/sessions/`.
-- Do not rename legacy unnumbered notes unless the user explicitly asks for a migration.
-- If a task touches `../ideas` or `../experiments`, update that folder's `sessions/` too.
+- 공통 기록 기준을 따른다. 이 저장소의 고유 결정·변경·근거만 `sessions/`에 기록하고 다른 저장소의 상세 결과는 링크한다.
+- `sessions/README.md`는 짧은 최신 진입점, 과거 목록은 `sessions/history.md`다. 중간 보고 원문은 기록하지 않는다.

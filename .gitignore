@@ -2,8 +2,11 @@
 .venv/
 venv/
 env/
-.env/
-venv/
+
+# Local secrets (track placeholders only)
+.env
+.env.*
+!.env.example
 
 # Python cache
 __pycache__/
