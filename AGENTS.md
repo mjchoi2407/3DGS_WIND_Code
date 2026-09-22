@@ -1,36 +1,28 @@
 # Wind3DGS Code Instructions
 
-Wind3DGS의 code 독립 저장소다. 공통 지침은 [`../AGENTS.md`](../AGENTS.md)를 적용한다.
-상위 지침이 자동 로드되지 않은 하위 저장소 단독 실행에서도 직접 확인한다. 이미 확인한 내용은 반복 출력하지 않는다.
-공통 언어·기록·Git·보안·LaTeX 규칙을 이 파일에 복제하지 않는다.
+구현 저장소다. [공통 필수 지침](../AGENTS.md)을 적용하며, 하위 저장소 단독 실행에서 상위 지침이 제공되지 않았다면 먼저 확인한다. 이미 확인한 지침은 재출력하지 않는다.
 
 ## Startup Protocol
 
-- 공통 시작 절차에 따라 `README.md`, `sessions/README.md`의 최신 요약을 확인한다.
-- GPU solver 신규 구현·성능 변경 시 [GPU 실행 선택 계약](docs/gpu_runtime_selection.md)과 [GPU 솔버 구현 기준](docs/gpu_solver_design.md)을 먼저 읽고, 관련 최적화의 적용 조건·캐시 무효화·검산·측정 범위를 설계와 검증에 반영한다. 현행 시각 확인 전용 기하 예외를 새 솔버의 일반 기준으로 승계하지 않는다.
-- API 작업은 `docs/usage.md`의 관련 절만, dependency/설치 작업은 `pyproject.toml`을 확인한다.
-- M01–M03 legacy viewer 호환 작업에서만 `requirements.txt`와 `requirements/legacy-viewer-py312.txt`를 함께 확인한다.
-- 연구 계약은 `../ideas/README.md`의 해당 R 절, 실험 의존성은 해당 experiment README/report/config만 읽는다.
+- 맥락이 충분하면 진행한다. 부족할 때만 [주제별 작업 색인](sessions/README.md#현재-상태) → 해당 note의 현재 상태 → 상세 절 링크 순서로 확인한다.
+- GPU solver·API·dependency 작업은 [작업별 필수 참조](docs/task_routes.md#gpu-작업)의 해당 행을 적용한다. GPU 적용 조건·캐시 무효화·독립 검산·측정 경계를 지키며 시각 확인 전용 예외를 일반 솔버 기준으로 승계하지 않는다.
+- 연구 계약·실험 의존성이 필요할 때만 해당 R 절 또는 experiment README/report/config를 읽는다.
 
 ## 구현 범위와 승인
 
-- 요청한 목표를 검토·검증 가능한 기능 단위로 나누되, 승인된 범위의 구현·버그 수정·리팩터링·필요한 검증은 재승인 없이 완료한다. 매 기능마다 같은 설계 양식을 반복하지 않는다.
-- 연구 방향, 주요 public interface/schema, dependency 전략, 완료 기준 또는 큰 계산 비용·산출물 범위가 요청 범위를 벗어나 바뀔 때만 영향과 선택지를 짧게 제시해 결정받는다. 명시적으로 선택을 기다리는 항목은 임의 확정하지 않는다.
-- 변경에 필요한 검증을 실행한다. 문구·링크 수정에 구현을 그대로 따라 쓰는 테스트를 새로 만들지 않는다. 변경·실패·남은 의문이 없으면 같은 전체 테스트를 반복하지 않는다.
+- 승인된 구현·버그 수정·리팩터링·필요 검증은 기능 단위로 완료한다. 같은 설계 양식이나 승인을 매번 반복하지 않는다.
+- 요청 범위를 벗어나는 연구 방향·public interface/schema·dependency 전략·완료 기준·큰 계산 비용 변경만 먼저 확인한다. 사용자 선택 대기는 임의 확정하지 않는다.
+- 변경에 맞는 검증을 실행한다. 문구·링크 수정에 구현을 복제하는 테스트를 만들지 않고, 변경·실패·남은 의문이 없으면 같은 전체 테스트를 반복하지 않는다.
 
 ## Dependency Policy
 
-- 사람이 편집하는 package metadata와 새 TD dependency의 유일한 source of truth는 `pyproject.toml`이다.
-- 새 dependency는 용도에 맞는 core dependency 또는 optional dependency group에 추가한다.
-- `requirements.txt`와 `requirements/legacy-viewer-py312.txt`는 보존된 M01--M03 legacy viewer 환경용 호환 진입점이다. 새 TD dependency를 이 파일에만 추가하지 않는다.
-- 설치 또는 dependency 변경 후에는 영향 범위에 맞는 import, unit test, build 또는 smoke test로 검증한다.
+- 현행 package metadata·새 TD dependency의 소유 파일은 [pyproject.toml](pyproject.toml)이다. 용도별 core/optional group에 추가하고 import·unit·build·smoke 중 필요한 검증을 한다.
+- M01–M03 legacy viewer의 requirements 파일은 호환 경로다. 새 TD dependency를 여기에만 추가하지 않는다. [설치·legacy 경로](docs/task_routes.md#api설치legacy-작업)를 따른다.
 
 ## Editing Rules
 
-- 재사용 구현은 `wind3dgs/`, API 사용법은 `docs/usage.md`에 둔다. 실험 사용법은 해당 experiments README를 연결하고 결과를 복제하지 않는다.
-- 구현 변경의 계약·검증·남은 문제는 code session에 짧게 기록한다. 공통 기록 기준을 따른다.
+재사용 구현은 `wind3dgs/`, API 사용법은 `docs/usage.md`에 둔다. 실험 상세 결과는 복제하지 않고 소유 문서의 해당 절을 연결한다.
 
 ## Session Tracking
 
-- 공통 기록 기준을 따른다. 이 저장소의 고유 결정·변경·근거만 `sessions/`에 기록하고 다른 저장소의 상세 결과는 링크한다.
-- `sessions/README.md`는 짧은 최신 진입점, 과거 목록은 `sessions/history.md`다. 중간 보고 원문은 기록하지 않는다.
+구현 변화·채택 결정·검증·미완료는 [공통 기록 규칙](../AGENTS.md#간결한-작업-기록)에 따라 해당 작업 note에 갱신한다. [주제별 색인](sessions/README.md#현재-상태)은 짧게 유지하고, 과거 근거는 [이전 작업 링크](sessions/README.md#이전-작업-링크--당시-상태)로 연결한다.
