@@ -1,5 +1,8 @@
 # Wind3DGS 코드 사용법
 
+[v10 CPU 동결 진단](frozen_cpu_diagnostics.md)은 같은 전처리 계수를 양쪽 GPU에 공급하는
+별도 1프레임 경로다. 기존 세 씬 실행의 기본값은 변경하지 않는다.
+
 [중력 처짐 후 주름 비교](gravity_wrinkle_test.md)는 고정2초 preload 후 위치·속도를 보존하여
 무풍/바람을 비교한다. 기본은 왼쪽 고정 직사각형 깃발이며 `--bending-ratio`로1/300·1/500을 별도 설정한다. 정착 판정이나 임의 감쇠를 적용하지 않는다.
 
@@ -1142,6 +1145,13 @@ Workspace root에서 `bash experiments/R1_teacher_velocity_reset/timestep_search
 `--prepare-only`는 CPU에서 캐시만 생성한다. 완료 상태·원본 trace hash·기하 코드 일치가 필요하다.
 P3 계산점을 연결한 표시 삼각형·60Hz 프레임 경계를 사용하며 시뮬레이션이나3DGS 렌더링을 수행하지 않는다.
 [대상·표시 범위·검증](../../experiments/R1_teacher_velocity_reset/timestep_search/evidence/saved_viewer_20260913/README.md).
+
+v11 GPU 셀프 접촉의 완료된 손수건·삼각 깃발은 별도 저장 형식이므로
+`bash experiments/R1_teacher_velocity_reset/self_contact/view_completed_gpu_scenes.sh`로 재생한다.
+기본은 메인 결과의 `preload` 2초와 `wind` 4초를 나란히 표시하며 `--source sub`,
+`--phase calm`, `--shape handkerchief|triangular_flag`, `--prepare-only`를 지원한다.
+완료된 결과와 각 프레임 SHA256·checkpoint·분기 초기 상태를 검사해 별도 float32 표시 캐시를
+만들고, solver·접촉 계산은 다시 실행하지 않는다. [원본·캐시·검증 범위](../../experiments/R1_teacher_velocity_reset/self_contact/three_scenes_gpu_v11.md#완료-두-씬-뷰어)를 따른다.
 
 ### GPU 상주 개발 구성요소
 

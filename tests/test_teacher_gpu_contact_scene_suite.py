@@ -10,6 +10,7 @@ from test_teacher_self_contact_scene_suite import mock_reference
 
 
 def prepared(tmp_path,monkeypatch):
+    monkeypatch.setenv('WIND3DGS_CUDSS_DETERMINISTIC','1')
     reference,contract = mock_reference(tmp_path,monkeypatch)
     source = reference/'reference_rectangle'
     native = source/'runtime/native'; native.mkdir(parents=True)
@@ -24,7 +25,12 @@ def test_gpu_prepare_hashes_native_inputs_and_no_simulation(tmp_path,monkeypatch
     root,cfg,contract = prepared(tmp_path,monkeypatch)
     assert gpu.verify(root) == cfg
     assert cfg['backend'] == 'gpu_resident' and cfg['gpu_readiness']['all_stages_gpu']
-    assert cfg['schema'] == 'p3_gpu_contact_three_scenes_v10'
+    assert cfg['schema'] == 'p3_gpu_contact_three_scenes_v12'
+    assert cfg['trajectory_mode'] == 'serial' and cfg['retry_newton_limit']
+    assert cfg['phase_start_s'] == dict(preload=0.,calm=2.,wind=6.)
+    assert cfg['trajectory_duration_s'] == 10.
+    assert cfg['cudss_deterministic_mode'] == 1
+    assert cfg['swept_candidate_capacity'] == 2_000_000
     assert cfg['linear_failure_recovery']['control_device']=='cuda'
     assert cfg['linear_failure_recovery']['dt_scale']==.5
     assert cfg['performance_policy'] == 'gpu_contact_split_bvh_v1'
@@ -34,11 +40,12 @@ def test_gpu_prepare_hashes_native_inputs_and_no_simulation(tmp_path,monkeypatch
     env = gpu.worker_environment(root)
     assert env['PYTHONPATH'] == str(root/'runtime')
     assert env['CUDSS_LIBRARY_PATH'] == str(root/'native/libcudss.so.0')
+    assert env['WIND3DGS_CUDSS_DETERMINISTIC'] == '1'
     (root/'native/libcudss.so.0').write_bytes(b'changed')
     with pytest.raises(ValueError,match='hash 불일치'): gpu.verify(root)
 
 
-def test_gpu_run_preserves_preload_hilo_for_both_branches(tmp_path,monkeypatch):
+def test_gpu_run_preserves_hilo_sequential_handoff(tmp_path,monkeypatch):
     root,_,_ = prepared(tmp_path,monkeypatch)
     monkeypatch.setattr(gpu,'initial_contact',lambda *a: {'status':0,'energy_j':0.})
     checkpoint = np.arange(4*7*3).reshape(4,7,3)*1e-18
@@ -47,14 +54,30 @@ def test_gpu_run_preserves_preload_hilo_for_both_branches(tmp_path,monkeypatch):
         folder.mkdir(); gpu.write(folder/'report.json',{'status':'complete'})
         if phase == 'preload': assert initial is None
         else:
-            np.testing.assert_array_equal(initial,checkpoint); branches.append(phase)
+            np.testing.assert_array_equal(initial,checkpoint if phase == 'calm' else checkpoint+1); branches.append(phase)
             initial[:] = 99.  # 분기 상태를 수정해도 원래 preload는 보존되어야 한다.
-        return checkpoint.copy()
+        return checkpoint.copy() if phase == 'preload' else checkpoint+1
     monkeypatch.setattr(gpu,'simulation',simulation)
     assert gpu.execute_shape(root,'reference_rectangle','run') == 0
     assert branches == ['calm','wind']
     assert gpu.read(root/'reference_rectangle/outputs/report.json')['full_trajectory_verified']
     with pytest.raises(FileExistsError): gpu.execute_shape(root,'reference_rectangle','run')
+
+
+@pytest.mark.parametrize('serial',[True,False])
+def test_calm_failure_never_starts_wind(tmp_path,monkeypatch,serial):
+    root,cfg,_ = prepared(tmp_path,monkeypatch)
+    cfg['trajectory_mode'] = 'serial' if serial else 'branched'
+    monkeypatch.setattr(gpu,'verify',lambda root:cfg)
+    monkeypatch.setattr(gpu,'initial_contact',lambda *a:{})
+    phases=[]
+    def simulate(root,folder,shape,phase,*args,**kwargs):
+        phases.append(phase);folder.mkdir()
+        gpu.write(folder/'report.json',{'status':'complete' if phase=='preload' else 'failed'})
+        return np.zeros((4,1,3)) if phase=='preload' else None
+    monkeypatch.setattr(gpu,'simulation',simulate)
+    assert gpu.execute_shape(root,'reference_rectangle','run') == 1
+    assert phases == ['preload','calm']
 
 
 def test_gpu_preload_failure_stops_branches(tmp_path,monkeypatch):
@@ -114,6 +137,8 @@ def test_simulation_preserves_gpu_recovery_and_discarded_evidence(tmp_path,monke
     class Frame:
         def __init__(self,model,state,wind,gravity,*,policy,**kwargs):
             self.state=np.array(state,copy=True);self.policy=policy;self.solver=SimpleNamespace(held=Held())
+            self.swept_capacity=kwargs.get('swept_capacity')
+            self.retry_newton_limit=kwargs.get('retry_newton_limit')
             self.graph_inventory=self.step_graph_inventory=self.audit_graph_inventory={}
             instances.append(self)
         def run_frame(self):
@@ -137,9 +162,15 @@ def test_simulation_preserves_gpu_recovery_and_discarded_evidence(tmp_path,monke
     monkeypatch.setattr(frame_module,'ResidentContactRetryFrame',Frame)
     cfg=dict(contact_policy=dict(subdivisions=3,minimum_distance_m=.001,activation_distance_m=.01,
              barrier_stiffness=1000.,proxy_error_budget_m=None),geometry_refinement_depth=2,
-             performance_policy='fixture')
+             performance_policy='fixture',swept_candidate_capacity=2_000_000,
+             retry_newton_limit=True,trajectory_mode='serial',phase_start_s={'wind':6.})
     result=gpu.simulation(root,tmp_path/'output',shape,phase,cfg,initial)
     assert len(instances)==1 and instances[0].policy.linear_cycles==3
+    assert instances[0].swept_capacity == 2_000_000
+    assert instances[0].retry_newton_limit is True
+    with np.load(tmp_path/'output/frame_0000.npz') as z:
+        assert float(z['trajectory_time_s']) == 6.+1/60
+        assert float(z['phase_time_s']) == 1/60
     np.testing.assert_array_equal(instances[0].state,initial)
     assert result is not None
     report=gpu.read(tmp_path/'output/report.json');frame=report['frames'][0]

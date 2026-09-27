@@ -16,15 +16,25 @@ from wind3dgs.evaluation.p3_contact_validation import patch_pair
 
 
 @pytest.mark.parametrize('code,finite,contact,path,prefix,time_bad,expected',[
-    (2,1,0,0,0,0,1),(1,1,0,0,0,0,0),(3,1,0,0,0,0,0),
+    (2,1,0,0,0,0,1),(1,1,0,0,0,0,1),(3,1,0,0,0,0,0),
+    (1,0,0,0,0,0,0),(1,1,1,0,0,0,0),(1,1,0,1,0,0,0),
+    (1,1,0,0,16,0,0),(1,1,0,0,2,0,0),(1,1,0,0,0,1,0),
     (2,0,0,0,0,0,0),(2,1,1,0,0,0,0),(2,1,0,1,0,0,0),
     (2,1,0,0,16,0,0),(2,1,0,0,2,0,0),(2,1,0,0,0,1,0)])
 def test_recovery_requires_finite_solver_and_valid_prefix(code,finite,contact,path,prefix,time_bad,expected):
     def a(value):return wp.array(value,dtype=wp.int32,device='cuda:0')
     out=a([9])
     wp.launch(allow_half_retry,dim=1,inputs=[a([code]),a([code,1,contact,path,finite]),
-        a([prefix,14,14]),a([time_bad]),out],device='cuda:0')
+        a([prefix,14,14]),a([time_bad]),out,1],device='cuda:0')
     assert int(out.numpy()[0])==expected
+
+
+def test_newton_limit_retry_is_opt_in():
+    def a(value):return wp.array(value,dtype=wp.int32,device='cuda:0')
+    out=a([9])
+    wp.launch(allow_half_retry,dim=1,inputs=[a([1]),a([1,1,0,0,1]),
+        a([0,14,14]),a([0]),out,0],device='cuda:0')
+    assert int(out.numpy()[0])==0
 
 
 def test_first_failure_keeps_original_stats_and_rejects_nan():
@@ -46,8 +56,8 @@ def inject(failure:wp.array(dtype=wp.int32),loop:wp.array(dtype=wp.int32),once:w
         failure[0]=code;once[0]=0
 
 
-@pytest.mark.parametrize('half_fails',[False,True])
-def test_gpu_half_retry_full_frame_and_next_forcing(monkeypatch,half_fails):
+@pytest.mark.parametrize('trigger_code,half_fails',[(1,False),(1,True),(2,False),(2,True)])
+def test_gpu_half_retry_full_frame_and_next_forcing(monkeypatch,trigger_code,half_fails):
     wp.load_module(module=__name__,device='cuda:0')
     class InjectedFrame(ResidentContactFrame):
         def __init__(self,*args,**kwargs):
@@ -56,7 +66,7 @@ def test_gpu_half_retry_full_frame_and_next_forcing(monkeypatch,half_fails):
         def _one_step(self):
             if self.steps==2 or half_fails:
                 wp.launch(inject,dim=1,inputs=[self.solver.failure,self.loop,self.once,
-                    2 if self.steps==2 else 10],device='cuda:0')
+                    trigger_code if self.steps==2 else 10],device='cuda:0')
             super()._one_step()
     monkeypatch.setattr(retry,'ResidentContactFrame',InjectedFrame)
     m,u,moving=patch_pair();v=np.zeros_like(u);v[moving,1]=-.2
@@ -66,12 +76,13 @@ def test_gpu_half_retry_full_frame_and_next_forcing(monkeypatch,half_fails):
     gravity=np.array([[0.,0.,0.],[0.,0.,-.1]])
     kwargs=dict(policy=ShellSolvePolicy(max_newton=40,line_search_steps=24,linear_cycles=12,linear_restart=60,
         linear_preconditioner='current'),contact_policy=ShellContactPolicy(barrier_stiffness=1000.),dt=.001,steps=2)
-    frame=retry.ResidentContactRetryFrame(m,initial,wind,gravity,**kwargs)
+    frame=retry.ResidentContactRetryFrame(m,initial,wind,gravity,retry_newton_limit=trigger_code==1,**kwargs)
     try:
         result=frame.run_frame()
         assert result['recovery']['kind']=='half_dt_gpu'
+        assert result['recovery']['trigger_failure_code']==trigger_code
         assert result['recovery']['control_device']=='cuda'
-        assert result['discarded_attempt']['failure']==2
+        assert result['discarded_attempt']['failure']==trigger_code
         assert result['discarded_attempt']['solver_diagnostic']['substep']==1
         assert not result['discarded_attempt']['flags'][:1].any()
         assert frame.graph_inventory['host_copies']==frame.graph_inventory['host_callbacks']==0
@@ -98,4 +109,20 @@ def test_gpu_half_retry_full_frame_and_next_forcing(monkeypatch,half_fails):
                 assert reference.run_frame()['status']=='passed'
                 np.testing.assert_allclose(frame.state_at_recording_boundary(),reference.state_at_recording_boundary(),rtol=1e-8,atol=2e-12)
             finally:reference.close()
+    finally:frame.close()
+
+
+def test_large_swept_capacity_reaches_both_solver_and_audit():
+    m,u,_=patch_pair()
+    initial=np.stack([u,np.zeros_like(u),np.zeros_like(u),np.zeros_like(u)])
+    wind=np.zeros((2,3)); gravity=np.zeros((2,3))
+    frame=retry.ResidentContactRetryFrame(m,initial,wind,gravity,
+        policy=ShellSolvePolicy(),contact_policy=ShellContactPolicy(barrier_stiffness=1000.),
+        dt=.001,steps=2,swept_capacity=2_000_000)
+    try:
+        for branch in (frame.base,frame.half):
+            assert branch.solver.contact.swept_capacity==2_000_000
+            assert branch.audit.force.contact.swept_capacity==2_000_000
+        assert frame.graph_inventory['host_copies']==0
+        assert frame.graph_inventory['host_callbacks']==0
     finally:frame.close()

@@ -8,6 +8,7 @@ from warp.optim.linear import LinearOperator
 from .p3_shell_resident_linalg import ResidentCSR
 
 P, I, L, S = ct.c_void_p, ct.c_int, ct.c_int64, ct.c_size_t
+CUDSS_071_DETERMINISTIC_MODE = 25  # libcudss-dev 0.7.1.4/include/cudss.h
 
 
 ALLOC=ct.CFUNCTYPE(I,P,ct.POINTER(P),S,P)
@@ -70,6 +71,10 @@ class CuDSSFactor:
         self.device = self.matrix.device
         if not self.device.is_cuda:
             raise ValueError('cuDSS에는 CUDA 장치가 필요합니다')
+        deterministic = os.environ.get('WIND3DGS_CUDSS_DETERMINISTIC', '0')
+        if deterministic not in ('0', '1'):
+            raise ValueError('WIND3DGS_CUDSS_DETERMINISTIC은 0 또는 1이어야 합니다')
+        self.deterministic = deterministic == '1'
         self.stream = wp.get_stream(self.device)
         path = os.environ.get('CUDSS_LIBRARY_PATH')
         if not path:
@@ -87,6 +92,15 @@ class CuDSSFactor:
         for key in (6,12,16):
             value = I(0)
             self._call('cudssConfigSet',self.config,key,ct.byref(value),ct.sizeof(value))
+        if self.deterministic:
+            value = I(1)
+            self._call('cudssConfigSet',self.config,CUDSS_071_DETERMINISTIC_MODE,
+                       ct.byref(value),ct.sizeof(value))
+            actual = I(-1); written = S()
+            self._call('cudssConfigGet',self.config,CUDSS_071_DETERMINISTIC_MODE,
+                       ct.byref(actual),ct.sizeof(actual),ct.byref(written))
+            if actual.value != 1 or written.value != ct.sizeof(actual):
+                raise RuntimeError('cuDSS 결정성 설정 readback 불일치')
         self._call('cudssDataCreate',self.handle,ct.byref(self.data))
         m = self.matrix
         n = m.shape[0]
@@ -119,6 +133,7 @@ class CuDSSFactor:
             'cudssCreate':[ct.POINTER(P)],'cudssDestroy':[P],
             'cudssSetStream':[P,P], 'cudssConfigCreate':[ct.POINTER(P)],
             'cudssConfigDestroy':[P], 'cudssConfigSet':[P,I,P,S],
+            'cudssConfigGet':[P,I,P,S,ct.POINTER(S)],
             'cudssDataCreate':[P,ct.POINTER(P)], 'cudssDataDestroy':[P,P],
             'cudssMatrixCreateCsr':[ct.POINTER(P),L,L,L,P,P,P,P,I,I,I,I,I],
             'cudssMatrixCreateDn':[ct.POINTER(P),L,L,L,P,I,I],

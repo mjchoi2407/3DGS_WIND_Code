@@ -48,9 +48,13 @@ BVH는 삼각형/엣지를 감싼 상자를 계층으로 묶는다. Octree의 �
 매 프레임 native rebuild는 임시 메모리 할당 graph node를 만들므로 현재 엄격한 프레임 그래프에서
 사용하지 않는다. 큰 변형의 주기적 GPU rebuild 최적화는 후속 성능 작업이다.
 
-고정 최종 후보 버퍼는 active `max(4096,32*proxy_vertices)`, swept `max(16384,16*(edges+faces))`다.
-이 두 용량 초과는 GPU failure로 전파되며 후보를 잘라낸 채 승인하지 않는다. 객체 생성 시 명시적으로
-용량을 늘릴 수 있다. 실장면 대규모 접힘의 메모리·속도 검증은 별도다.
+기본 후보 버퍼는 active `max(4096,32*proxy_vertices)`, swept `max(16384,16*(edges+faces))`다.
+v11/v12 세 씬 실행기는 swept 용량을 객체당 2,000,000개로 명시한다. 기본/half의 solver와
+독립 audit 네 객체에 동일하게 전달한다. 각 객체의 swept pair(16B)+kind(4B) 버퍼는
+약 40MB, 네 객체 합계 약 160MB이다. 병렬 CCD는 고정 작업자 수가 실제 후보 수를
+가져오므로 용량만큼 매번 정밀 검사를 수행하지 않는다. active 용량·BVH·물리 조건은
+바꾸지 않는다. 두 후보 용량 초과는 GPU failure로 전파되며 후보를 잘라낸 채 승인하지 않는다.
+실장면 대규모 접힘의 메모리·속도 및 새 v12 장기 완주는 별도 검증이다.
 
 ## 힘·해법·검산 계약
 
@@ -75,6 +79,12 @@ BVH는 삼각형/엣지를 감싼 상자를 계층으로 묶는다. Octree의 �
   나머지 오류·기하/CCD/audit 실패를 우회하거나 Gauss/contact-OFF/CPU로 fallback하지 않는다.
   재시도용 solver/검산 객체를 초기 준비하므로 추가 메모리와 setup 비용이 있고 정상 프레임에서는
   이를 실행하지 않는다. 실패 시도와 재시도 시간을 모두 총시간에 포함한다.
+  진단 opt-in `retry_newton_limit=True`는 같은 유한성·contact/path·시간축·승인 prefix
+  조건을 만족한 Newton 한도 code1에도 한 번만 dt/2를 적용한다. 기본값은 `False`이며
+  기존 v11 동결 bundle의 code2 전용 정책은 바뀌지 않는다. 새 v12 실행 묶음은
+  사용자 승인으로 이 옵션을 켜며 preload→calm→wind를 연속 전달한다.
+  [v12 실행 계약·검증 범위](../../experiments/R1_teacher_velocity_reset/self_contact/three_scenes_gpu_v12.md#연결과-복구-계약)를 따른다. 단일 프레임 검증은
+  [v11 사각형 진단](../../experiments/R1_teacher_velocity_reset/self_contact/three_scenes_gpu_v11.md#사각형-wind-code1-dt2-격리-진단)을 따른다.
 
 `local_metric`은 천이 국소적으로 찌그러져 면적이0이 되지 않았음을 보이는 충분조건이다.
 이전 scalar 충분조건 실패는 그대로 기록하며, 새 `local_metric_refined_v1`은 별도의 양의 하한을
@@ -163,7 +173,11 @@ audit 전체와 GMRES 누적 횟수를 터미널 및 run log에 기본 출력한
 
 의존성은 `.[teacher-contact,teacher-gpu-resident]`이며 Warp1.17.0·cuDSS0.7.1로 검증했다.
 세 씬 실행기는 기존 검증 runtime의 cuDSS/shim을 hash 확인 후 복사하므로 임의 native library로
-대체하지 않는다. CPU IPC는 준비 metadata·독립 대조용이며 GPU worker의 반복 계산에는 호출하지 않는다.
+대체하지 않는다. v11/v12 worker는 cuDSS 0.7.1.4의 결정성 옵션(key 25)을 analysis 전에 설정하고
+readback으로 검증한다. 같은 GPU의 격리 질량 풀이 반복은 bitwise 일치했으나 메인·서브
+사이에는 최대 3 ULP 차이가 남았고 본 프레임 결정성/장기 수렴은 아직 검증되지 않았다.
+CPU IPC는 준비 metadata·독립 대조용이며 GPU worker의 반복 계산에는 호출하지 않는다.
+[v11 실행 설정과 실패 원인](../../experiments/R1_teacher_velocity_reset/self_contact/three_scenes_gpu_v11.md#현재-상태)을 따른다.
 
 ```python
 import numpy as np

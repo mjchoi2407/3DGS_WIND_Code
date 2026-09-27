@@ -163,6 +163,8 @@ def show(paths, args):
     viewer = SampleClothViewerGL(width=1280, height=800, vsync=True, paused=True,
                                  headless=args.smoke_frames > 0)
     viewer.renderer.set_title('Wind3DGS - Saved mesh playback')
+    labels = [readable_shape(json.loads((path/'manifest.json').read_text()).get('shape',path.name))
+              for path in paths]
     datasets = []
     for index, path in enumerate(paths):
         p = np.load(path/'positions.npy', mmap_mode='r')
@@ -189,7 +191,7 @@ def show(paths, args):
     state = {'time': min(max(args.time,0.),duration), 'speed':1., 'loop':True, 'pins':True}
     def gui(ui):
         ui.text('Saved simulation playback (no solver)')
-        ui.text('Left: rectangle | Right: handkerchief' if len(paths)==2 else paths[0].name)
+        ui.text('Left: '+labels[0]+' | Right: '+labels[1] if len(paths)==2 else labels[0])
         _, state['time'] = ui.slider_float('Time (s)',state['time'],0.,duration)
         _, state['speed'] = ui.slider_float('Playback speed',state['speed'],.1,2.)
         _, state['loop'] = ui.checkbox('Loop',state['loop'])
@@ -230,6 +232,11 @@ def show(paths, args):
     finally:
         viewer.close()
     print(f'저장 결과 뷰어 종료: {rendered}회 표시, 물리 계산 없음',flush=True)
+
+
+def readable_shape(shape):
+    return {'reference_rectangle':'rectangle','handkerchief':'handkerchief',
+            'triangular_flag':'triangular flag'}.get(shape,shape)
 
 
 def main():

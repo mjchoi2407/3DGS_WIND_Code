@@ -21,7 +21,8 @@ from .teacher_scene_model import build_scene_model, effective_material
 from ..teacher.p3_shell_contact import ShellContactPolicy
 from ..teacher.p3_shell_dynamics import ShellSolvePolicy
 
-DEFAULT_OUT = Path('experiments/artifacts/runs/p3_self_contact/three_scenes_gpu_bend500_manual_v10')
+DEFAULT_OUT = Path('experiments/artifacts/runs/p3_self_contact/three_scenes_gpu_bend500_manual_v12')
+SWEPT_CANDIDATE_CAPACITY = 2_000_000
 NATIVE_FILES = ('libcudss.so.0', 'libcudss_workspace.so', 'cudss_workspace.c')
 TIMING_SUM_KEYS = ('solver_noncollision_s','collision_s','collision_solver_s','collision_audit_s',
                    'audit_noncollision_s','frame_control_s','solver_inclusive_s','audit_inclusive_s')
@@ -52,19 +53,23 @@ def prepare(root,reference,shapes,policy):
     cfg = base.prepare(staging,reference,shapes,policy)
     native = staging/'native'; native.mkdir()
     for name in NATIVE_FILES: shutil.copy2(source/'runtime/native'/name,native/name)
-    cfg.update(schema='p3_gpu_contact_three_scenes_v10',backend='gpu_resident',
+    cfg.update(schema='p3_gpu_contact_three_scenes_v12',backend='gpu_resident',
                backend_selection='GPU 전용; CPU fallback 없음',gpu_readiness=readiness(),
                precision='float64_hilo',linear_preconditioner='current_shell_only_approximation',
                solver='GPU Newmark',
-               retry=('유한한 code2·정상 prefix만 GPU 조건 분기로 frame-start에서 dt/2·128단계 재실행; '
+               retry_newton_limit=True,trajectory_mode='serial',
+               phase_start_s=dict(preload=0.,calm=2.,wind=6.),trajectory_duration_s=10.,
+               branch_contract='preload 2초 → calm 4초 → wind 4초; raw hi/lo 위치·속도 연속 전달',
+               retry=('유한한 code1/code2·정상 prefix만 GPU 조건 분기로 frame-start에서 dt/2·128단계 재실행; '
                       '외력/허용오차/contact 유지, Gauss/contact-OFF/CPU fallback 없음'),
-               linear_failure_recovery=dict(trigger_failure_code=2,dt_scale=.5,substep_scale=2,
+               linear_failure_recovery=dict(trigger_failure_codes=[1,2],dt_scale=.5,substep_scale=2,
                     maximum_attempts=1,rollback='frame_start_hilo',control_device='cuda',all_numerical_stages_gpu=True),
                frame_rollback='모든 substep GPU 검산; 오류 시 GPU에서 프레임 시작 상태 복원',
                output_scope='프레임 끝 raw hi/lo와 모든 substep GPU 검산 저장',
                geometry_policy='local_metric_refined_v1',geometry_refinement_depth=2,
                geometry_refinement_capacity='max(1024,8*elements)',
                performance_policy=PERFORMANCE_POLICY,
+               cudss_deterministic_mode=1,swept_candidate_capacity=SWEPT_CANDIDATE_CAPACITY,
                native_sha256={name:digest(native/name) for name in NATIVE_FILES})
     cfg['environment']['packages']['warp-lang'] = importlib.metadata.version('warp-lang')
     write(staging/'suite.json',cfg)
@@ -87,6 +92,8 @@ def gpu_environment_matches(cfg):
     current['packages']['warp-lang'] = importlib.metadata.version('warp-lang')
     if current != cfg['environment']:
         raise ValueError('동결 Python/numpy/scipy/ipctk/Warp 환경 버전과 일치하지 않습니다')
+    if cfg.get('cudss_deterministic_mode') == 1 and os.environ.get('WIND3DGS_CUDSS_DETERMINISTIC') != '1':
+        raise ValueError('동결 cuDSS 결정성 설정이 worker 환경에 적용되지 않았습니다')
 
 
 def save_pair(path,pair,**extra):
@@ -109,6 +116,8 @@ def frame_progress(shape,phase,frame,total,result,*,status=None):
     recovery = result.get('recovery')
     suffix = (f' | GPU dt/2 복구 {recovery["retry_substeps"]}단계 '
               f'(실패 시도 {recovery["discarded_frame_wall_s"]:.3f}초 포함)' if recovery else '')
+    if result['status'] == 'failed' and result.get('contact_path_status') == 3:
+        suffix += ' | swept 후보 용량 초과'
     return (f'{shape}/{phase}: {frame+1}/{total}프레임 [{status or result["status"]}] | '
             f'프레임 wall {result["frame_wall_s"]:.3f}초 | '
             f'solver 전체 {timing["solver_inclusive_s"]:.3f}초 '
@@ -137,16 +146,23 @@ def simulation(root,folder,shape,phase,cfg,initial,*,smoke=False):
     report = dict(status='running',shape=shape,phase=phase,backend='gpu_resident',
                   all_stages_gpu=True,self_collision_checked=True,training_eligible=False,production_enabled=False,
                   smoke_only=smoke,source_frame=source_frame,completed_frames=0,frames=[],
+                  trajectory_mode=cfg.get('trajectory_mode','branched'),
+                  phase_start_s=cfg.get('phase_start_s',{}).get(phase),
+                  retry_newton_limit=cfg.get('retry_newton_limit',False),
                   initial_state_sha256=digest(folder/'initial_state.npz'),material=effective_material(model),
                   policy=asdict(policy),contact_policy=cfg['contact_policy'],
-                  performance_policy=cfg.get('performance_policy','legacy_v2'))
+                  performance_policy=cfg.get('performance_policy','legacy_v2'),
+                  cudss_deterministic_mode=cfg.get('cudss_deterministic_mode',0),
+                  swept_candidate_capacity=cfg.get('swept_candidate_capacity'))
     write(folder/'report.json',report)
     solver = None; start = perf_counter()
     contact_policy = ShellContactPolicy(**cfg['contact_policy'])
     def create_solver(state):
         return ResidentContactRetryFrame(model,state,wind,gravity,policy=policy,
             contact_policy=contact_policy,dt=1/(plan['fps']*plan['substeps']),steps=plan['substeps'],
-            linear_cap=plan['linear_cap'],geometry_refinement_depth=cfg['geometry_refinement_depth'])
+            linear_cap=plan['linear_cap'],geometry_refinement_depth=cfg['geometry_refinement_depth'],
+            swept_capacity=cfg.get('swept_candidate_capacity'),
+            retry_newton_limit=cfg.get('retry_newton_limit',False))
     try:
         solver = create_solver(initial)
         report.update(setup_s=perf_counter()-start,gpu=wp.get_device('cuda:0').name,
@@ -180,7 +196,8 @@ def simulation(root,folder,shape,phase,cfg,initial,*,smoke=False):
             file = folder/f'frame_{frame:04d}.npz'
             save_pair(file,pair,checks=checks,flags=flags,geometry_refinement=geometry,coarse_geometry_flags=coarse,
                       held_force_n=solver.solver.held.numpy().reshape(-1,3),
-                      gravity_m_s2=gravity[frame],wind_m_s=wind[frame],phase_time_s=(frame+1)/plan['fps'])
+                      gravity_m_s2=gravity[frame],wind_m_s=wind[frame],phase_time_s=(frame+1)/plan['fps'],
+                      trajectory_time_s=cfg.get('phase_start_s',{}).get(phase,0.)+(frame+1)/plan['fps'])
             result.update(frame=frame,state_sha256=digest(file),max_force_ratio=float(checks[:,0].max()),
                           flags=np.unique(flags).tolist())
             report['frames'].append(result); report['completed_frames'] = frame+1
@@ -201,7 +218,8 @@ def initial_contact(root,shape,cfg):
     from ..teacher.gpu_shell_contact import GPUShellContact
     plan = read(root/shape/'preload/plan.json')
     model = build_scene_model(root/shape/'preload',plan,shape)
-    contact = GPUShellContact(model,policy=ShellContactPolicy(**cfg['contact_policy']))
+    contact = GPUShellContact(model,policy=ShellContactPolicy(**cfg['contact_policy']),
+                              swept_capacity=cfg.get('swept_candidate_capacity'))
     zeros = wp.zeros(len(model.rest_positions),dtype=wp.vec3d,device='cuda:0')
     force,energy,status = contact.evaluate(zeros,zeros)
     wp.synchronize_device('cuda:0')
@@ -221,7 +239,9 @@ def execute_shape(root,shape,action):
     dest.mkdir(parents=True,exist_ok=False)
     report = dict(status='running',action=action,shape=shape,backend='gpu_resident',all_stages_gpu=True,
                   training_eligible=False,production_enabled=False,full_trajectory_verified=False,
-                  source_manifest_sha256=digest(root/'manifest.json'),phases={})
+                  source_manifest_sha256=digest(root/'manifest.json'),phases={},
+                  cudss_deterministic_mode=cfg.get('cudss_deterministic_mode',0),
+                  swept_candidate_capacity=cfg.get('swept_candidate_capacity'))
     start = perf_counter(); write(dest/'report.json',report)
     try:
         for phase in PHASES: base.load_forcing(root/shape/phase)
@@ -236,9 +256,11 @@ def execute_shape(root,shape,action):
             preload = simulation(root,dest/'preload',shape,'preload',cfg,None)
             report['phases']['preload'] = read(dest/'preload/report.json')['status']
             if preload is None: raise ValueError('GPU preload 실패; calm/wind를 시작하지 않습니다')
+            state = preload
             for phase in ('calm','wind'):
-                # 두 분기는 같은 raw hi/lo preload에서 독립 시작한다. 속도 초기화 없음.
-                state = simulation(root,dest/phase,shape,phase,cfg,preload.copy())
+                # v12는 연속 전달, 이전 bundle은 독립 분기 계약을 유지한다.
+                initial = state if cfg.get('trajectory_mode') == 'serial' else preload
+                state = simulation(root,dest/phase,shape,phase,cfg,initial.copy())
                 report['phases'][phase] = read(dest/phase/'report.json')['status']
                 if state is None: raise ValueError('GPU phase 승인 실패: '+phase)
             report['full_trajectory_verified'] = True
@@ -259,7 +281,8 @@ def worker_environment(root):
     return dict(os.environ,PYTHONPATH=str((root/'runtime').resolve()),
                 CUDSS_LIBRARY_PATH=str(native/'libcudss.so.0'),LD_PRELOAD=str(native/'libcudss_workspace.so'),
                 OPENBLAS_NUM_THREADS='1',OMP_NUM_THREADS='1',TBB_NUM_THREADS='1',
-                WARP_CACHE_PATH=os.environ.get('WARP_CACHE_PATH','/tmp/wind3dgs-gpu-contact-cache'))
+                WARP_CACHE_PATH=os.environ.get('WARP_CACHE_PATH','/tmp/wind3dgs-gpu-contact-cache'),
+                WIND3DGS_CUDSS_DETERMINISTIC=str(read(root/'suite.json').get('cudss_deterministic_mode',0)))
 
 
 def run_and_tee(command,*,cwd,env,log):

@@ -37,7 +37,7 @@ def store_ledger(energy: wp.array(dtype=wp.float64), ledger: wp.array(dtype=wp.f
 
 class ResidentContactFrame:
     def __init__(self,model,initial,wind,gravity,*,policy,contact_policy,dt=1/3840,steps=64,linear_cap=1e-4,
-                 geometry_refinement_depth=2,geometry_refinement_capacity=None,optimized=True,held_force_source=None):
+                 geometry_refinement_depth=2,geometry_refinement_capacity=None,swept_capacity=None,optimized=True,held_force_source=None):
         self.steps = steps; self.dt = dt; self.n = 3*len(model.rest_positions)
         self.held_force_source=held_force_source
         if type(steps) is not int or steps < 1: raise ValueError('프레임 단계 수는 양의 정수여야 합니다')
@@ -48,7 +48,7 @@ class ResidentContactFrame:
         with track_conditional_bodies() as bodies:
             self.solver = ResidentContactStepper(model,initial[0],initial[2],wind,gravity=gravity,
                 policy=policy,contact_policy=contact_policy,dt=dt,linear_cap=linear_cap,
-                optimized=optimized,timing=self.timings)
+                swept_capacity=swept_capacity,optimized=optimized,timing=self.timings)
             for dest,source in zip(self.solver.state,initial): dest.assign(np.asarray(source).ravel())
             self.backup = [wp.empty_like(a) for a in self.solver.state]
             self.trace = wp.zeros((steps+1,4,self.n),dtype=wp.float64,device='cuda:0')
@@ -57,7 +57,7 @@ class ResidentContactFrame:
                 forces=np.zeros((1,self.n//3,3)),balances=np.zeros(steps),policy=policy,
                 contact_policy=contact_policy,chunk_steps=steps,compare_reference=False,geometry_policy='local_metric',
                 geometry_refinement_depth=geometry_refinement_depth,geometry_refinement_capacity=geometry_refinement_capacity,
-                optimized=optimized,timing=self.timings)
+                swept_capacity=swept_capacity,optimized=optimized,timing=self.timings)
             self.audit.upload_device(self.trace)
             if self.audit.factor.info_at_save_boundary() or self.solver.mass_factor.info_at_save_boundary():
                 raise RuntimeError('초기 질량 행렬 분해 실패: 접촉 프레임 실행을 거절합니다')

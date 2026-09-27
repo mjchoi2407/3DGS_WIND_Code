@@ -83,12 +83,12 @@ class ContactOperators:
 
 
 class ResidentContactStepper(GravityShellStepper):
-    def __init__(self,model,*args,contact_policy=None,optimized=True,timing=None,**kwargs):
+    def __init__(self,model,*args,contact_policy=None,swept_capacity=None,optimized=True,timing=None,**kwargs):
         device = kwargs.get('device','cuda:0')
         self.optimized = optimized
         self.accepted_evaluation_ready = wp.zeros(1,dtype=wp.int32,device=device)
         self.contact_ops = ContactOperators(model,contact_policy=contact_policy,device=device,
-                                            optimized=optimized,timing=timing)
+                                            swept_capacity=swept_capacity,optimized=optimized,timing=timing)
         self.contact = self.contact_ops.contact
         self._shell_only = False
         self.reductions = ParallelReductions(max(3*len(model.rest_positions),3*len(model.triangles)),device)
@@ -173,12 +173,12 @@ class ResidentContactStepper(GravityShellStepper):
 
 
 class ResidentContactAudit(ResidentAudit):
-    def __init__(self,model,*,contact_policy=None,geometry_refinement_depth=None,geometry_refinement_capacity=None,
+    def __init__(self,model,*,contact_policy=None,swept_capacity=None,geometry_refinement_depth=None,geometry_refinement_capacity=None,
                  optimized=True,timing=None,**kwargs):
         if geometry_refinement_depth is not None and kwargs.get('geometry_policy') != 'local_metric':
             raise ValueError('정밀 기하 검사는 명시적 local_metric 정책에서만 사용합니다')
         force = ContactOperators(model,contact_policy=contact_policy,device=kwargs.get('device','cuda:0'),
-                                 optimized=optimized,with_hessian=not optimized,timing=timing)
+                                 swept_capacity=swept_capacity,optimized=optimized,with_hessian=not optimized,timing=timing)
         super().__init__(model,force_operator=force,**kwargs)
         self.metric_certificate = None
         if geometry_refinement_depth is not None:

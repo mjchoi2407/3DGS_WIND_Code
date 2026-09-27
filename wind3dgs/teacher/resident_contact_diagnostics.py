@@ -26,8 +26,9 @@ def record_first_failure(failure:wp.array(dtype=wp.int32),loop:wp.array(dtype=wp
 @wp.kernel
 def allow_half_retry(failure:wp.array(dtype=wp.int32),info:wp.array(dtype=wp.int32),
                      flags:wp.array(dtype=wp.int32),time_status:wp.array(dtype=wp.int32),
-                     allowed:wp.array(dtype=wp.int32)):
-    ok=(failure[0]==2 and info[0]==2 and info[2]==0 and info[3]==0 and info[4]==1
+                     allowed:wp.array(dtype=wp.int32),retry_newton_limit:int):
+    recoverable=(failure[0]==2 or (retry_newton_limit!=0 and failure[0]==1))
+    ok=(recoverable and info[0]==failure[0] and info[2]==0 and info[3]==0 and info[4]==1
         and time_status[0]==0 and info[1]>=0 and info[1]<flags.shape[0])
     # 미완료 tail의 flag14와 실제 승인 prefix의 검산 오류를 구분한다.
     for j in range(flags.shape[0]):

@@ -1,4 +1,4 @@
-"""유한한 code2·승인 prefix만 GPU에서 한 번 절반 dt로 프레임 전체 재시도한다."""
+"""기본 code2, 명시적 진단에서는 유한한 code1도 GPU에서 한 번 절반 dt로 재시도한다."""
 from time import perf_counter
 import warp as wp
 
@@ -23,7 +23,9 @@ class ResidentContactRetryFrame:
     분기·rollback·외력 재사용·half128 적분·검산·상태 채택 모두 GPU에 남는다.
     재시도 실패는 더 세분하지 않고 원래 프레임 시작 상태를 보존한다.
     """
-    def __init__(self,model,initial,wind,gravity,*,dt=1/3840,steps=64,**kwargs):
+    def __init__(self,model,initial,wind,gravity,*,dt=1/3840,steps=64,retry_newton_limit=False,**kwargs):
+        if type(retry_newton_limit) is not bool: raise ValueError('Newton 한도 재시도 옵션은 bool이어야 합니다')
+        self.retry_newton_limit=retry_newton_limit
         self.base=None;self.half=None;self.graph=None
         self.allowed=wp.zeros(1,dtype=wp.int32,device='cuda:0')
         self.accepted=wp.zeros(1,dtype=wp.int32,device='cuda:0')
@@ -40,7 +42,7 @@ class ResidentContactRetryFrame:
                     self.base._submit_frame()
                     wp.launch(allow_half_retry,dim=1,inputs=[self.base.solver.failure,
                         self.base.first_failure.info,self.base.audit.flags,self.base.audit.time_status,
-                        self.allowed],device='cuda:0')
+                        self.allowed,int(self.retry_newton_limit)],device='cuda:0')
                     wp.capture_if(self.allowed,self._retry)
                 self.graph=captured.graph
             self.graph_inventory=device_graph_inventory(self.graph,conditional_bodies=bodies)
@@ -80,7 +82,7 @@ class ResidentContactRetryFrame:
             self.half_gmres_total+=result['counts'][9]
             # 버린 원래 시도의 검산/진단은 채택 결과와 분리해 보존한다.
             result['discarded_attempt']=first
-            result['recovery']=dict(kind='half_dt_gpu',trigger_failure_code=2,attempts=1,
+            result['recovery']=dict(kind='half_dt_gpu',trigger_failure_code=first['failure'],attempts=1,
                 setup_s=0.,base_dt=self.base.dt,accepted_dt=self.half.dt,
                 base_substeps=self.base.steps,retry_substeps=self.half.steps,
                 rollback='frame_start_hilo',held_force_reused=True,control_device='cuda',
