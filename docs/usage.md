@@ -1136,6 +1136,16 @@ GPU chunk 뷰어는 완료 보고서의 해시와 각60Hz 경계를 확인해 �
 
 ### 완료된 P3 메시 저장 결과 재생
 
+v12 GPU 셀프 접촉의 사각형·손수건·삼각 깃발 연속10초는 프로젝트 root에서
+`bash experiments/R1_teacher_velocity_reset/self_contact/view_gpu_v12.sh`로 재생한다.
+기본은 세 씬 나란히 표시, `--shape reference_rectangle|handkerchief|triangular_flag`로 하나만 표시한다.
+`--time 6`은 바람 시작 시각, `--prepare-only`는 창 없이 표시 캐시만 준비한다.
+Space 재생/정지·시간/속도 슬라이더·마우스 회전/확대와 구간 표시를 지원한다.
+어댑터 `--phase trajectory`는 v12에서만 허용하며 전체0–10초와 raw hi/lo 연결을 확인한다.
+모델·원본 frame/report/hash를 검사하고 새 뷰어 버전은 새 기본 캐시 경로를 사용한다.
+물리 solver를 호출하지 않으며 기존 v11 표시도 유지한다.
+[원본·명령·표시 검증과 한계](../../experiments/R1_teacher_velocity_reset/self_contact/three_scenes_gpu_v12.md#연속10초-뷰어).
+
 물리 solver를 실행하지 않고 확정된 `reference_rectangle`·`handkerchief` 궤적을 재생한다.
 Workspace root에서 `bash experiments/R1_teacher_velocity_reset/timestep_search/view_completed_meshes.sh`를 실행한다.
 처음에는 정지 상태이며 Space·시간/속도 슬라이더·마우스 회전/확대로 확인한다.
@@ -1256,3 +1266,145 @@ GPU에서는 모두 FP32 연산이며, HVP/조립/선형 풀이 전체를 확장
 `--shape reference_rectangle|handkerchief|triangular_flag`, `--out`, `--prepare-only`,
 `--status-only`를 지원한다. 기존 R64 대조는 `run_gpu_baseline_scenes.sh`를 사용한다.
 [정확한 조건·5070 환경 제한·결과 비교](../../experiments/R1_teacher_velocity_reset/timestep_search/gpu_auto_scenes/README.md)를 확인한다.
+
+
+### v13 초기 굽힘과 1/4/5초 실행
+
+[실험 소유 문서](../../experiments/R1_teacher_velocity_reset/self_contact/three_scenes_gpu_v13.md#준비-묶음과-명령)의 준비된 v13을 사용한다.
+`teacher_gpu_contact_drape_suite`는 고정점/평면 rest/물성을 유지하며 초기 위치만 원통형으로 굽힌다.
+기본5도·초기 속도0, preload60/calm240/wind300프레임, 구간 간 raw hi/lo 전달을 유지한다.
+기본 action은 prepare이고 기존 출력을 거절한다. run은 사용자 명시 실행이며 prepared bundle만 사용한다.
+
+```bash
+bash experiments/R1_teacher_velocity_reset/self_contact/run_gpu_v13.sh --action run
+bash experiments/R1_teacher_velocity_reset/self_contact/run_gpu_v13.sh --action status
+# 세 씬 완료 후
+bash experiments/R1_teacher_velocity_reset/self_contact/view_gpu_v13.sh
+```
+
+초기 형상과 입력 준비만 검증했다. GPU 접촉 preflight·동적 안정성·자연스러운 처짐은 아직 미검증이다.
+
+
+### GPU 저장 궤적의 CPU 분석과 공통 표면점
+
+[분석 소유 문서](../../experiments/R1_teacher_velocity_reset/self_contact/motion_analysis.md#실행-명령)의 명령을 따른다.
+완료된 v12/v13 serial raw 기록의 위치/속도를 메시 독립적인512개 표면점에 signed P3로 옮긴다.
+출력은 새 폴더여야 하며 solver/GPU 계산을 하지 않는다. 원본 입력만 있는 경우 map 준비만 가능하다.
+
+```bash
+bash experiments/R1_teacher_velocity_reset/self_contact/analyze_gpu_motion.sh --run <완료_run> --out <새_분석_폴더>
+bash experiments/R1_teacher_velocity_reset/self_contact/prepare_gpu_surface_samples.sh --run <동결_run> --out <새_map_폴더>
+```
+
+`index.html`은 처짐·속도·비평면성 곡선과 대표3방향 이미지를 제공한다. `<shape>/samples.npz`는
+위치/속도(m, m/s)·rest 면적 가중치(m²)·시각을 보존한다. 분석 완료는 수렴/학습 적격 판정이 아니다.
+재사용 API는 `p3_common_surface.common_points` / `interpolation_map`,
+`gpu_contact_recording_io.load_completed`, `analyze_gpu_contact_recording.motion_metrics`다.
+
+
+### 공통512점의 CG 시간·공간 비교
+
+[비교 소유 문서](../../experiments/R1_teacher_velocity_reset/self_contact/cg_comparator.md#사용-명령)의 직접 run CLI를 사용한다.
+
+```bash
+bash experiments/R1_teacher_velocity_reset/self_contact/compare_gpu_cg_checks.sh \
+  --candidate <덜_정밀한_완료_run> --reference <더_정밀한_완료_run> \
+  --axis time --out <새_비교_폴더>
+```
+
+`--axis space`는 같은 substeps의 더 높은 사각형 해상도를 기준으로 비교한다.
+`--axis identity-check`는 같은 원본의 도구 점검 전용이다. 출력 JSON·CSV·곡선·HTML512점 겹쳐보기를 생성하며
+수치 pass는 시각 대기로 남긴다. T/S 입력 생성/실행·24 지원·최종 적격 판정은 이 도구의 범위가 아니다.
+
+
+### 짧은 GPU 감쇠 시각 비교
+
+`teacher_gpu_damping_sample`은 완료 v13 삼각 깃발의3초 raw hi/lo 상태에서
+감쇠 없음/1/3 s^-1을 각각1초 실행할 독립 묶음을 준비한다. 기본 action은 status이며,
+prepare는 계산하지 않는다. run은 동결 runtime에서 GPU 셀프 접촉/검산을 유지한다.
+선택적 프레임 속도 감쇠는 연속 재료 점성 모델이나 teacher 기본값 변경이 아니다.
+준비된 묶음·사용자 실행/나란히 재생 명령·검증 한계는
+[감쇠 샘플 문서](../../experiments/R1_teacher_velocity_reset/self_contact/damping_sample.md#바로-실행)를 따른다.
+
+
+### v13 사각형128단계 시간 비교
+
+`teacher_gpu_time_refinement`는 완료 v13의 입력과 동결 runtime/native를 그대로 복사하고
+사각형의 기본 substeps만64→128로 바꿔 새 묶음을 준비한다. 최근 worktree의 감쇠 변경을 포함하지 않는다.
+기본 action은 status이며, 명시적 run에서 기준 GPU 모델 확인 후 원본 동결 실행기를 호출한다.
+명령·입력 식별·CPU 검증과 미실행 범위는 [128단계 실행/비교](../../experiments/R1_teacher_velocity_reset/self_contact/v13_time128.md#실행과-비교)를 따른다.
+
+감쇠 진단 강화 프로필: `teacher_gpu_damping_sample --action prepare --profile stronger --out <새 경로>`는3/5/8 s^-1을 동결한다. run/status/view는 동결 suite의 조건을 읽으며 기본0/1/3 묶음도 지원한다. [실행 래퍼와 한계](../../experiments/R1_teacher_velocity_reset/self_contact/damping_sample.md#강화-감쇠-비교-준비).
+
+고감쇠 진단은 `--profile high`로8/16/24 s^-1을 준비한다. 허용 상한은24 s^-1이며 프레임 간격 제한과 독립 검산은 유지한다. [실행·검증 범위](../../experiments/R1_teacher_velocity_reset/self_contact/damping_sample.md#고감쇠-비교-준비).
+
+감쇠24 연속 궤적은 `teacher_gpu_damped_trajectory --substeps 64|128 --action prepare|run|status`를 사용한다. [메인/서브 실행·동결·검증 경계](../../experiments/R1_teacher_velocity_reset/self_contact/damping24_time.md#실행). `execute_shape`는 선택적 suite `diagnostic_frame_damping_s_inv`를 모든 phase에 전달하며 기본0 경로는 유지한다.
+
+감쇠24 단일 PC 통합은 `teacher_gpu_damping24_pair --action run|status|compare`를 사용한다. 기본status는 GPU를 초기화하지 않으며, run은 현재 cuda:0으로 두 입력을 새 경로에 고정한 뒤64→128을 순차 실행한다. [한 명령 실행·실패 보존·비교](../../experiments/R1_teacher_velocity_reset/self_contact/damping24_time.md#단일-pc-통합-실행).
+
+`teacher_gpu_wind_damping --action prepare|run|status|view`는 완료된24의5초 상태에서wind8/16을 비교한다. 물리 runtime은 원본 동결본을 복사하며 기존24를 재실행하지 않는다. [서브 실행·세 조건 재생·검증 한계](../../experiments/R1_teacher_velocity_reset/self_contact/wind_damping.md#실행과-재생).
+
+### 진단용 막 내부 감쇠
+
+`teacher_gpu_internal_damping --action prepare|run|status|view`는 메인 GTX1080Ti의1ms/5ms 후보다.
+[준비·선행 GPU 검사·실행·재생](../../experiments/R1_teacher_velocity_reset/self_contact/internal_damping.md#실행과-재생).
+`ResidentContactRetryFrame(..., membrane_damping_tau_s=...)`의 기본값은0이며,
+양수 진단에서는 `frame_velocity_damping_s_inv=0`을 요구한다. 단위는초이고 이 막 감쇠 옵션 자체에는 굽힘 점성이 포함되지 않는다.
+`ContactOperators.evaluate_state(u,ul,v,vl)`는 매 상태의 감쇠 힘을 계산한다. Newton trial 속도를
+Newmark 식으로 복원하며 정확한 비대칭 위치/속도 접선과 독립 소산 장부를 함께 사용한다.
+[식·검산·한계](../../experiments/R1_teacher_velocity_reset/self_contact/internal_damping.md#모델과-검산).
+`simulation(..., smoke=True, smoke_frame=0)`은 원본 첫 프레임 연결 검사다. 미지정 smoke는 기존 프레임 선택을 유지한다.
+
+### 진단용 굽힘 내부 감쇠
+
+`teacher_gpu_bending_damping --action prepare|run|status|view`는 기존 막5ms의8초 raw 상태에서
+굽힘1ms/5ms를 추가해 마지막2초를 비교한다. [동결·실행·뷰어·한계](../../experiments/R1_teacher_velocity_reset/self_contact/bending_damping.md#실행과-재생).
+`ResidentContactRetryFrame(..., membrane_damping_tau_s=.005, bending_damping_tau_s=.001)`처럼 지정한다.
+굽힘 기본값0은 기존 막 객체를 그대로 사용한다. 양수는 곡률·접힘각 변화의 소산과 정확한 위치/속도 접선을 더하며
+전역 프레임 감쇠0을 요구한다. [법칙·독립 장부와 적용 경계](../../experiments/R1_teacher_velocity_reset/self_contact/bending_damping.md#모델과-검산).
+`simulation`의 선택적 `cfg.phase_time_offset_s[phase]`는 부분 구간의 원래 phase 경과 시간을 기록한다.
+이번은 offset3초·trajectory 시작8초이며 기본 offset0은 기존 동작을 유지한다.
+
+### 진단용 굽힘 강성 절반 비교
+
+`teacher_gpu_bending_stiffness`는 기존 P3 막5ms 궤적의8초 raw 상태에서 굽힘 강성만 절반으로 낮춰 마지막2초를 비교한다.
+[조건·실행·동결 입력·검증 한계](../../experiments/R1_teacher_velocity_reset/self_contact/bending_stiffness.md#현재-상태)를 따른다.
+`candidate_plan`은 기존 `with_bending_ratio`로 Eh·면밀도를 유지하고 Eh³·경계 굽힘 항을 절반으로 만든다.
+`prepare`는 원본 runtime/native를 그대로 복사하고 새 실행기만 추가한다. 기본 `status`와 `view --prepare-only`는 적분하지 않는다.
+`run`은 메인 GTX1080Ti에서 첫 프레임 검사를 통과한 뒤 원본8초 raw로 돌아가120프레임을 계산한다. 기존 결과/로그가 있으면 거절한다.
+`cache_case`는 기존1/500의 마지막120프레임을 재사용하고 새1/1000 완주 결과의 raw·시간·외력·핀·소산·hash를 검사해 비교 재생한다.
+굽힘 감쇠는0이며, 원본 동결 `simulation`의 막 감쇠 인자만 사용한다. 새로운 힘/검산 법칙은 추가하지 않았다.
+사용자 실행의 첫1프레임·본120프레임 완료를 확인했다. 과거 동결 기록기의구간0–2초와wind3–5초 해석 차이는 `recorded_phase_origin`/`validate_frame_times`로 검증하며 원본 NPZ는 수정하지 않는다. [시간 호환 수정·20개 검사·실제 렌더 근거](../../experiments/R1_teacher_velocity_reset/self_contact/bending_stiffness.md#시간-기록-호환-수정)를 따른다. 시각 선호·민감도·학습 채택은 별도다.
+
+공용 `view_shell_recording.show`는 전체 저장 궤적 bounds와 사이드바를 고려해 카메라를 맞춘다. 창 크기/UI 배율 변경 시 다시 맞추며 `Fit all recordings` 버튼으로 복원한다. `fit_recording_camera`는 표시용 카메라만 계산하고 천 좌표·물리 축척은 유지한다. [화면 가림 재현·검증](../../experiments/R1_teacher_velocity_reset/self_contact/bending_stiffness.md#화면-가림-수정)을 따른다.
+
+### Small Steps XPBD 진단 후보
+
+`teacher_xpbd_pilot --action run --out <새 경로>`는 기존 막5ms의8초 raw 상태를 P1 꼭짓점으로 변환하고
+wind2초·별도 중력1초를16/32 substep에서 계산한다. 기존 출력 경로는 거절한다.
+[실행 결과·64 후속·재생 명령](../../experiments/R1_teacher_velocity_reset/self_contact/xpbd_pilot.md#재생과-원본).
+`XPBD(Cloth(...), positions, velocities, substeps=32, membrane_tau=.005, bending_tau=0, device='cuda:0')`는
+한 substep당 strain block/dihedral 보정1회, 이산 자기접촉2회인 FP32 후보이며 `step(wind, gravity)`가 한60Hz 프레임을 계산한다.
+[물성 대응·질량·공력 hold·접촉·검산의 차이](../../experiments/R1_teacher_velocity_reset/self_contact/xpbd_pilot.md#조건과-구현-범위).
+실패 상태는 trajectory/보고서에 남기고 다음 프레임을 중단한다. `recorded_frames`는 실패 증거를 포함하고
+`completed_frames`는 승인된 프레임만 센다. 기존 P3의 canonical 힘/에너지 검산·IPC CCD·학습 적격성과 구분한다.
+
+## P3 잔진동·계산 비용 탐색
+
+`teacher_gpu_vibration_search`는 굽힘1/500 기준의 내부 감쇠 강화·약한 전역 감쇠 조합을 별도 동결 묶음에서 비교한다.
+기본 API의5ms 한도와 내부/전역 조합 금지는 유지한다. `diagnostic_damping.damping_experiment` context에서만20ms·조합을 허용하며,
+`fast_bending_hvp=True`는 별도 정확한 접선 전용 조립 후보를, `cached_bending_hvp=True`는 같은 평가 상태의 기하량 재사용 후보를 선택한다. 두 옵션은 동시에 켤 수 없다. 상태별 독립 GPU-NumPy oracle 뒤 짧은 비용 선별·후보 궤적을 진행한다.
+세부 입력·진행·비용·한계는 [실험 보고서](../../experiments/R1_teacher_velocity_reset/self_contact/vibration_search.md#현재-상태)가 소유한다.
+
+프로젝트 루트의 `bash experiments/R1_teacher_velocity_reset/self_contact/run_gpu_vibration_search.sh`는 기본 상태 조회다.
+`--action oracle --case NAME`은 독립 대조, `--action run --case NAME --stage cost8|cost95|tail|wind`은 지정 구간만 실행한다.
+기존 bundle/log/output은 덮어쓰지 않는다. 최종 후보 재생은 `view_gpu_vibration_search.sh`, 분석은 `analyze_gpu_vibration_search` 모듈이다.
+최종 추천은 `recommendations.json`의 `bundle_cached:bend20`이다. `view_gpu_vibration_search.sh --stage wind`는 공통5초부터전체wind, `--stage tail`은 같은8초에서분기한2초를재생한다. 두 구간 모두 원본기준과동기비교한다. 전체wind분석은 `analyze_gpu_vibration_wind`가 소유한다.
+
+## P3 바람 시간 평활·국소화 진단
+
+`teacher_gpu_wind_field`는 감쇠 추천안을 유지하고 기존 균일·시간 평활·평활 국소 바람을 같은 상태에서 비교한다. `diagnostic_wind.local_wind_experiment(profile)` context에서만 `ResidentShellStepper`가 국소 공력을 선택하며 기본 경로는 기존 커널을 사용한다. 월드 중심·양의3축 sigma·gain·프레임별 activation을 입력하고 프레임 공력 hold와 retry는 유지한다.
+
+[실행·재생 명령과 시간 범위](../../experiments/R1_teacher_velocity_reset/self_contact/wind_field.md#실행과-재생), [설정·한계](../../experiments/R1_teacher_velocity_reset/self_contact/wind_field.md#조건과-판단-범위)를 따른다. `analyze_gpu_wind_field`는 raw·독립 외력·진동·동작·비용을 검산하고 `view_gpu_wind_field`는 공통 앞2초와 새2초를 연결한다. 전체10초·시간/공간수렴·학습 판정 도구가 아니다.
+
+국소 바람의 dt/2 재시도는 base에서 계산한 held force를 복사한다. `ResidentContactRetryFrame`은 half에 별도 국소 strategy를 만들지 않으며 다음 기본 프레임은 원래 activation을 계속 사용한다. 이번 완료 비교의 기본 재생은 `bundle`의 기준/평활과 `bundle_local_v2`의 국소를 연결하고, 입력·native·teacher runtime의 허용된 retry 연결 차이를 검사한다.

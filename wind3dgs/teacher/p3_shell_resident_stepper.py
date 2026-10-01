@@ -35,6 +35,8 @@ class ResidentShellStepper:
             if np.shape(value)!=model.rest_positions.shape or np.any(np.asarray(value)[~model.free]!=0) or not np.isfinite(value).all():
                 raise ValueError('초기 상태 shape/고정점/유한성 오류')
         self.u,self.ul,self.v,self.vl=self.state
+        from .diagnostic_wind import make_strategy
+        self.wind_strategy=make_strategy(self)
         self.uh,self.lo,self.tu,self.tl,self.vh,self.vlo,self.direction,self.held=[wp.zeros(self.nfull,dtype=wp.float64,device=self.device) for _ in range(8)]
         self.a0,self.a,self.ta,self.rhs,self.delta,self.mass_result,self.action_mass=[wp.zeros(self.n,dtype=wp.float64,device=self.device) for _ in range(7)]
         self.energy=wp.zeros(3,dtype=wp.float64,device=self.device)
@@ -162,6 +164,9 @@ class ResidentShellStepper:
         for dest,src in zip(self.state,[self.uh,self.lo,self.vh,self.vlo]):wp.copy(dest,src)
 
     def _aero(self):
+        if self.wind_strategy is not None:
+            self.wind_strategy.evaluate(self)
+            return
         m=self.ops.model;b=m._volume;m._force.zero_();m._hvp.zero_()
         wp.launch(resident_aero.aero,dim=b.host.weights.shape,inputs=[self.vec(self.u),self.vec(self.v),b.ids,b.N,b.G,b.H,
             b.weight,m._t0,m._t1,self.wind,self.c,m._qforce,m._power,m._valid],device=self.device)

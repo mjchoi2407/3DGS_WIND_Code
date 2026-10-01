@@ -37,7 +37,10 @@ def store_ledger(energy: wp.array(dtype=wp.float64), ledger: wp.array(dtype=wp.f
 
 class ResidentContactFrame:
     def __init__(self,model,initial,wind,gravity,*,policy,contact_policy,dt=1/3840,steps=64,linear_cap=1e-4,
-                 geometry_refinement_depth=2,geometry_refinement_capacity=None,swept_capacity=None,optimized=True,held_force_source=None):
+                 geometry_refinement_depth=2,geometry_refinement_capacity=None,swept_capacity=None,optimized=True,held_force_source=None,membrane_damping_tau_s=0.,bending_damping_tau_s=0.):
+        from .membrane_damping import validate_tau
+        self.membrane_damping_tau_s = validate_tau(membrane_damping_tau_s)
+        self.bending_damping_tau_s = validate_tau(bending_damping_tau_s)
         self.steps = steps; self.dt = dt; self.n = 3*len(model.rest_positions)
         self.held_force_source=held_force_source
         if type(steps) is not int or steps < 1: raise ValueError('프레임 단계 수는 양의 정수여야 합니다')
@@ -48,7 +51,8 @@ class ResidentContactFrame:
         with track_conditional_bodies() as bodies:
             self.solver = ResidentContactStepper(model,initial[0],initial[2],wind,gravity=gravity,
                 policy=policy,contact_policy=contact_policy,dt=dt,linear_cap=linear_cap,
-                swept_capacity=swept_capacity,optimized=optimized,timing=self.timings)
+                swept_capacity=swept_capacity,optimized=optimized,timing=self.timings,
+                membrane_damping_tau_s=membrane_damping_tau_s,bending_damping_tau_s=bending_damping_tau_s)
             for dest,source in zip(self.solver.state,initial): dest.assign(np.asarray(source).ravel())
             self.backup = [wp.empty_like(a) for a in self.solver.state]
             self.trace = wp.zeros((steps+1,4,self.n),dtype=wp.float64,device='cuda:0')
@@ -57,7 +61,8 @@ class ResidentContactFrame:
                 forces=np.zeros((1,self.n//3,3)),balances=np.zeros(steps),policy=policy,
                 contact_policy=contact_policy,chunk_steps=steps,compare_reference=False,geometry_policy='local_metric',
                 geometry_refinement_depth=geometry_refinement_depth,geometry_refinement_capacity=geometry_refinement_capacity,
-                swept_capacity=swept_capacity,optimized=optimized,timing=self.timings)
+                swept_capacity=swept_capacity,optimized=optimized,timing=self.timings,
+                membrane_damping_tau_s=membrane_damping_tau_s,bending_damping_tau_s=bending_damping_tau_s)
             self.audit.upload_device(self.trace)
             if self.audit.factor.info_at_save_boundary() or self.solver.mass_factor.info_at_save_boundary():
                 raise RuntimeError('초기 질량 행렬 분해 실패: 접촉 프레임 실행을 거절합니다')
@@ -172,7 +177,7 @@ class ResidentContactFrame:
                    '프레임 wall과 합산하지 않음'))
         passed = not failure and not audit['flags'].any() and not audit['time_failed'] and not audit['mass_info']
         if passed: self.completed_frames += 1
-        return dict(status='passed' if passed else 'failed',frame_wall_s=elapsed,compute_audit_s=elapsed,
+        result = dict(status='passed' if passed else 'failed',frame_wall_s=elapsed,compute_audit_s=elapsed,
                     stage_timings=stage_timings,failure=failure,
                     counts=counts.tolist(),checks=audit['history'],flags=audit['flags'],
                     geometry_policy=audit['geometry_policy'],geometry_refinement=audit.get('geometry_refinement'),
@@ -183,6 +188,20 @@ class ResidentContactFrame:
                     contact_path_status=int(self.solver.contact.path_status.numpy()[0]),
                     first_bad=int(self.first_bad.numpy()[0]),solver_diagnostic=self.first_failure.result(),
                     dt=self.dt,substeps=self.steps)
+        if self.bending_damping_tau_s:
+            from .bending_damping import LAW
+            loss = self.audit.dissipation.numpy()
+            result['internal_damping'] = dict(bending_law=LAW,membrane_tau_s=self.membrane_damping_tau_s,
+                bending_tau_s=self.bending_damping_tau_s,global_rate_s_inv=0.,dissipation_j=loss.tolist(),
+                total_dissipation_j=float(loss.sum()),dissipation_scope='membrane_plus_curvature_plus_hinge',
+                audit_failed=bool(audit['flags'].any()))
+        elif self.membrane_damping_tau_s:
+            from .membrane_damping import LAW
+            loss = self.audit.dissipation.numpy()
+            result['membrane_damping'] = dict(law=LAW,tau_s=self.membrane_damping_tau_s,
+                bending_tau_s=0.,global_rate_s_inv=0.,dissipation_j=loss.tolist(),
+                total_dissipation_j=float(loss.sum()),audit_failed=bool(audit['flags'].any()))
+        return result
 
     def state_at_recording_boundary(self):
         return np.stack([a.numpy().reshape(-1,3) for a in self.solver.state])

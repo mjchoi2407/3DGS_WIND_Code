@@ -158,18 +158,20 @@ def geometry_unresolved(projected: wp.float64, strain: wp.float64, mode: int):
 @wp.kernel
 def finish_physics(total: wp.array2d(dtype=wp.vec2d), maxima: wp.array2d(dtype=wp.float64),
                    bounds: wp.array(dtype=wp.float64), energy: wp.array(dtype=wp.float64),
-                   balances: wp.array(dtype=wp.float64), index: wp.array(dtype=wp.int32),
+                   balances: wp.array(dtype=wp.float64), dissipation: wp.array(dtype=wp.float64), index: wp.array(dtype=wp.int32),
                    atol: wp.float64, rtol: wp.float64, history: wp.array2d(dtype=wp.float64), flags: wp.array(dtype=wp.int32), geometry_mode: int):
     s = index[0]+index[1]
     scale = wp.sqrt(wp.max(total[0, 0][0], wp.max(total[0, 1][0], total[0, 2][0])))
     ratio = wp.sqrt(wp.max(wp.float64(0.0), total[0, 3][0]))/(atol+rtol*scale)
     # 기준 검산과 같은 float 반환 경계: 탄성/운동 에너지를 각각 float64로 반환한 뒤 차감한다.
     balance = energy[1]+wp.float64(.5)*(total[0, 5][0]+total[0, 5][1])-energy[0]-wp.float64(.5)*(total[0, 4][0]+total[0, 4][1])-(total[0, 6][0]+total[0, 6][1])
+    balance += dissipation[s]
     ledger = wp.abs(balance-balances[s])
     history[s, 0] = ratio; history[s, 1] = maxima[0, 0]; history[s, 2] = ledger
     history[s, 3] = bounds[0]; history[s, 4] = bounds[1]; history[s, 5] = bounds[2]
     f = int(0)
     if maxima[0, 2] != wp.float64(0.0) or bounds[4] != wp.float64(0.0) or energy[2] != wp.float64(0.0) or energy[3] != wp.float64(0.0) or not wp.isfinite(ratio) or not wp.isfinite(ledger) or not wp.isfinite(balances[s]): f = f | 1
+    if not wp.isfinite(dissipation[s]) or dissipation[s] < wp.float64(0.): f = f | 8
     if ratio > wp.float64(1.0): f = f | 2
     if maxima[0, 0] > wp.float64(2e-14): f = f | 4
     if ledger > wp.float64(3e-16)+wp.float64(1e-8)*wp.abs(balance): f = f | 8

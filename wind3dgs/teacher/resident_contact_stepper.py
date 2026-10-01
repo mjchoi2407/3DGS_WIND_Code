@@ -61,11 +61,18 @@ def audit_path_flag(alpha: wp.array(dtype=wp.float64), status: wp.array(dtype=wp
 
 
 class ContactOperators:
-    def __init__(self,model,*,contact_policy,device='cuda:0',timing=None,**capacity):
+    def __init__(self,model,*,contact_policy,device='cuda:0',timing=None,membrane_damping_tau_s=0.,bending_damping_tau_s=0.,**capacity):
         self.shell = AuditForce(model,device=device)
         self.contact = GPUShellContact(model,policy=contact_policy,device=device,timing=timing,**capacity)
         self.model = self.shell.model; self.device = self.shell.device
         self.diagnostics = self.shell.diagnostics; self.status = self.shell.status
+        self.damping = None
+        if bending_damping_tau_s:
+            from .resident_bending_damping import ShellInternalDamping
+            self.damping = ShellInternalDamping(model,membrane_damping_tau_s,bending_damping_tau_s,device=device)
+        elif membrane_damping_tau_s:
+            from .resident_membrane_damping import MembraneDamping
+            self.damping = MembraneDamping(model,membrane_damping_tau_s,device=device)
         wp.load_module(module=__name__,device=device)
 
     def evaluate(self,hi,lo):
@@ -73,23 +80,41 @@ class ContactOperators:
         cf,energy,cs = self.contact.evaluate(hi,lo)
         wp.launch(add_force,dim=len(force),inputs=[force,cf],device=self.device)
         wp.launch(add_energy,dim=1,inputs=[diagnostic,energy,status,cs],device=self.device)
+        if self.damping is not None:
+            df = self.damping.evaluate(hi,lo)
+            wp.launch(add_force,dim=len(force),inputs=[force,df],device=self.device)
+            wp.launch(k.fail_from_status,dim=1,inputs=[self.damping.status,status,120],device=self.device)
         return force,diagnostic,status
+
+    def evaluate_state(self,u,ul,v,vl):
+        if self.damping is not None: self.damping.set_velocity(v,vl)
+        return self.evaluate(u,ul)
+
+    def damping_hvp(self,result,status,direction):
+        if self.damping is not None:
+            dh = self.damping.hvp(direction)
+            wp.launch(add_force,dim=len(result),inputs=[result,dh],device=self.device)
+            wp.launch(k.fail_from_status,dim=1,inputs=[self.damping.status,status,120],device=self.device)
 
     def hvp(self,u,direction):
         result,status = self.shell.hvp(u,direction)
+        self.damping_hvp(result,status,direction)
         ch = self.contact.hvp(direction)
         wp.launch(add_force,dim=len(result),inputs=[result,ch],device=self.device)
         return result,status
 
 
 class ResidentContactStepper(GravityShellStepper):
-    def __init__(self,model,*args,contact_policy=None,swept_capacity=None,optimized=True,timing=None,**kwargs):
+    def __init__(self,model,*args,contact_policy=None,swept_capacity=None,optimized=True,timing=None,membrane_damping_tau_s=0.,bending_damping_tau_s=0.,**kwargs):
         device = kwargs.get('device','cuda:0')
         self.optimized = optimized
         self.accepted_evaluation_ready = wp.zeros(1,dtype=wp.int32,device=device)
         self.contact_ops = ContactOperators(model,contact_policy=contact_policy,device=device,
-                                            swept_capacity=swept_capacity,optimized=optimized,timing=timing)
+                                            swept_capacity=swept_capacity,optimized=optimized,timing=timing,
+                                            membrane_damping_tau_s=membrane_damping_tau_s,bending_damping_tau_s=bending_damping_tau_s)
         self.contact = self.contact_ops.contact
+        if self.contact_ops.damping is not None:
+            self.contact_ops.damping.velocity_scale = 2./kwargs.get('dt',1/3840)
         self._shell_only = False
         self.reductions = ParallelReductions(max(3*len(model.rest_positions),3*len(model.triangles)),device)
         wp.load_module(module=resident_current_first,device=device)
@@ -125,6 +150,7 @@ class ResidentContactStepper(GravityShellStepper):
         self.direction.zero_(); self.launch(k.scatter,[x,self.ids,self.direction],self.n)
         operator = self.ops.shell if self._shell_only else self.ops
         hvp,status = operator.hvp(self.vec(self.uh),self.vec(self.direction))
+        if self._shell_only: self.ops.damping_hvp(hvp,status,self.vec(self.direction))
         self.launch(k.fail_from_status,[status,self.failure,6])
         self.mass.matvec(x,self.action_mass,self.action_mass,alpha=1.,beta=0.)
         self.launch(k.tangent_result,[self.action_mass,self.flat(hvp),self.ids,y,z,
@@ -137,9 +163,16 @@ class ResidentContactStepper(GravityShellStepper):
         finally: self._shell_only = False
         self.current.factor(); self.launch(k.built,[self.c])
 
+    def _evaluate(self,u,lo,a,stats):
+        if self.ops.damping is not None:
+            self.launch(k.finish_velocity,[self.v,self.vl,self.a0,a,self.ids,wp.float64(self.dt),self.vh,self.vlo],self.n)
+            self.ops.damping.set_velocity(self.vec(self.vh),self.vec(self.vlo))
+        return super()._evaluate(u,lo,a,stats)
+
     def _attempt(self):
         self.launch(k.begin_attempt,[self.c,self.s])
-        initial,_,status = self.ops.evaluate(self.vec(self.u),self.vec(self.ul))
+        initial,_,status = self.ops.evaluate_state(self.vec(self.u),self.vec(self.ul),self.vec(self.v),self.vec(self.vl))
+        if self.ops.damping is not None: self.ops.damping.keep_power()
         self.launch(k.fail_from_status,[status,self.failure,4])
         self._kinetic(self.v,self.vl)
         self.launch(k.initial_energy,[self.ops.diagnostics,self.gmres.dotter.col(0),self.energy])
@@ -167,6 +200,8 @@ class ResidentContactStepper(GravityShellStepper):
 
     def _finalize(self):
         super()._finalize()
+        if self.ops.damping is not None:
+            self.ops.damping.finish_solver(self.energy,self.dt,self.failure)
         self.contact.path(self.vec(self.u),self.vec(self.ul),self.vec(self.uh),self.vec(self.lo),
                           velocity=self.vec(self.v),velocity_lo=self.vec(self.vl),dt=self.dt)
         self.launch(require_path,[self.contact.alpha,self.contact.path_status,self.failure])
@@ -174,11 +209,12 @@ class ResidentContactStepper(GravityShellStepper):
 
 class ResidentContactAudit(ResidentAudit):
     def __init__(self,model,*,contact_policy=None,swept_capacity=None,geometry_refinement_depth=None,geometry_refinement_capacity=None,
-                 optimized=True,timing=None,**kwargs):
+                 optimized=True,timing=None,membrane_damping_tau_s=0.,bending_damping_tau_s=0.,**kwargs):
         if geometry_refinement_depth is not None and kwargs.get('geometry_policy') != 'local_metric':
             raise ValueError('정밀 기하 검사는 명시적 local_metric 정책에서만 사용합니다')
         force = ContactOperators(model,contact_policy=contact_policy,device=kwargs.get('device','cuda:0'),
-                                 swept_capacity=swept_capacity,optimized=optimized,with_hessian=not optimized,timing=timing)
+                                 swept_capacity=swept_capacity,optimized=optimized,with_hessian=not optimized,timing=timing,
+                                 membrane_damping_tau_s=membrane_damping_tau_s,bending_damping_tau_s=bending_damping_tau_s)
         super().__init__(model,force_operator=force,**kwargs)
         self.metric_certificate = None
         if geometry_refinement_depth is not None:

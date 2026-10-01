@@ -107,6 +107,18 @@ def load_pair(path):
         return np.stack([z[k] for k in ('u_hi','u_lo','v_hi','v_lo')])
 
 
+def starting_state(root, shape, cfg, model):
+    name = cfg.get('initial_states', {}).get(shape)
+    if name is None:
+        return np.zeros((4,*model.rest_positions.shape),dtype=np.float64)
+    pair = load_pair(root/name)
+    if (pair.dtype != np.float64 or pair.shape != (4,*model.rest_positions.shape)
+            or not np.isfinite(pair).all() or np.any(pair[:,~model.free] != 0)
+            or np.any(pair[2:] != 0)):
+        raise ValueError('동결 초기 상태 dtype/shape/finite/고정점/초기 속도 오류')
+    return pair
+
+
 def frame_progress(shape,phase,frame,total,result,*,status=None):
     """중첩 계측값을 합산식으로 오해하지 않도록 한 줄로 표시한다."""
     timing = result['stage_timings']
@@ -129,7 +141,7 @@ def frame_progress(shape,phase,frame,total,result,*,status=None):
             f'계측보정 ×{scales} | GMRES 누적 {result.get("gmres_total",result["counts"][9])}{suffix}')
 
 
-def simulation(root,folder,shape,phase,cfg,initial,*,smoke=False):
+def simulation(root,folder,shape,phase,cfg,initial,*,smoke=False,frame_velocity_damping_s_inv=0.,membrane_damping_tau_s=0.,bending_damping_tau_s=0.,smoke_frame=None):
     import warp as wp
     from ..teacher.resident_contact_retry import ResidentContactRetryFrame
     source = root/shape/phase
@@ -137,11 +149,12 @@ def simulation(root,folder,shape,phase,cfg,initial,*,smoke=False):
     gravity,wind = base.load_forcing(source)
     source_frame = None
     if smoke:
-        source_frame = 0 if phase == 'preload' else int(np.argmax(np.linalg.norm(wind,axis=1)))
+        source_frame = (0 if phase == 'preload' else int(np.argmax(np.linalg.norm(wind,axis=1)))) if smoke_frame is None else smoke_frame
+        if type(source_frame) is not int or not 0 <= source_frame < len(wind): raise ValueError('smoke 원본 프레임 범위 오류')
         gravity,wind = gravity[source_frame:source_frame+1],wind[source_frame:source_frame+1]
     policy = ShellSolvePolicy(**plan['official_policy'])
     folder.mkdir(parents=True,exist_ok=False)
-    if initial is None: initial = np.zeros((4,*model.rest_positions.shape),dtype=np.float64)
+    if initial is None: initial = starting_state(root,shape,cfg,model)
     save_pair(folder/'initial_state.npz',initial)
     report = dict(status='running',shape=shape,phase=phase,backend='gpu_resident',
                   all_stages_gpu=True,self_collision_checked=True,training_eligible=False,production_enabled=False,
@@ -155,14 +168,28 @@ def simulation(root,folder,shape,phase,cfg,initial,*,smoke=False):
                   cudss_deterministic_mode=cfg.get('cudss_deterministic_mode',0),
                   swept_candidate_capacity=cfg.get('swept_candidate_capacity'))
     write(folder/'report.json',report)
+    if membrane_damping_tau_s or bending_damping_tau_s:
+        from ..teacher.membrane_damping import LAW
+        report['internal_damping'] = dict(law=LAW,tau_s=membrane_damping_tau_s,bending_tau_s=bending_damping_tau_s,global_rate_s_inv=frame_velocity_damping_s_inv)
+        if bending_damping_tau_s:
+            from ..teacher.bending_damping import LAW as BENDING_LAW
+            report['internal_damping']['bending_law']=BENDING_LAW
     solver = None; start = perf_counter()
     contact_policy = ShellContactPolicy(**cfg['contact_policy'])
     def create_solver(state):
+        damping_options = ({'frame_velocity_damping_s_inv':frame_velocity_damping_s_inv}
+                           if frame_velocity_damping_s_inv else {})
+        if membrane_damping_tau_s or bending_damping_tau_s:
+            from ..teacher.diagnostic_damping import combined_allowed
+            if frame_velocity_damping_s_inv and not combined_allowed():
+                raise ValueError('막 감쇠 진단은 전역 감쇠0 필요; 조합은 별도 실험 opt-in 필요')
+            damping_options['membrane_damping_tau_s']=membrane_damping_tau_s
+            if bending_damping_tau_s: damping_options['bending_damping_tau_s']=bending_damping_tau_s
         return ResidentContactRetryFrame(model,state,wind,gravity,policy=policy,
             contact_policy=contact_policy,dt=1/(plan['fps']*plan['substeps']),steps=plan['substeps'],
             linear_cap=plan['linear_cap'],geometry_refinement_depth=cfg['geometry_refinement_depth'],
             swept_capacity=cfg.get('swept_candidate_capacity'),
-            retry_newton_limit=cfg.get('retry_newton_limit',False))
+            retry_newton_limit=cfg.get('retry_newton_limit',False),**damping_options)
     try:
         solver = create_solver(initial)
         report.update(setup_s=perf_counter()-start,gpu=wp.get_device('cuda:0').name,
@@ -196,7 +223,7 @@ def simulation(root,folder,shape,phase,cfg,initial,*,smoke=False):
             file = folder/f'frame_{frame:04d}.npz'
             save_pair(file,pair,checks=checks,flags=flags,geometry_refinement=geometry,coarse_geometry_flags=coarse,
                       held_force_n=solver.solver.held.numpy().reshape(-1,3),
-                      gravity_m_s2=gravity[frame],wind_m_s=wind[frame],phase_time_s=(frame+1)/plan['fps'],
+                      gravity_m_s2=gravity[frame],wind_m_s=wind[frame],phase_time_s=cfg.get('phase_time_offset_s',{}).get(phase,0.)+(frame+1)/plan['fps'],
                       trajectory_time_s=cfg.get('phase_start_s',{}).get(phase,0.)+(frame+1)/plan['fps'])
             result.update(frame=frame,state_sha256=digest(file),max_force_ratio=float(checks[:,0].max()),
                           flags=np.unique(flags).tolist())
@@ -220,8 +247,10 @@ def initial_contact(root,shape,cfg):
     model = build_scene_model(root/shape/'preload',plan,shape)
     contact = GPUShellContact(model,policy=ShellContactPolicy(**cfg['contact_policy']),
                               swept_capacity=cfg.get('swept_candidate_capacity'))
-    zeros = wp.zeros(len(model.rest_positions),dtype=wp.vec3d,device='cuda:0')
-    force,energy,status = contact.evaluate(zeros,zeros)
+    pair = starting_state(root,shape,cfg,model)
+    hi = wp.array(pair[0],dtype=wp.vec3d,device='cuda:0')
+    lo = wp.array(pair[1],dtype=wp.vec3d,device='cuda:0')
+    force,energy,status = contact.evaluate(hi,lo)
     wp.synchronize_device('cuda:0')
     # 다음은 준비 검산 결과의 기록 경계다. 반복 수치 계산에 이 값을 돌려주지 않는다.
     result = dict(status=int(status.numpy()[0]),energy_j=float(energy.numpy()[0]),
@@ -229,12 +258,14 @@ def initial_contact(root,shape,cfg):
         p3_nodes=len(model.rest_positions),proxy_vertices=len(contact.rest),proxy_faces=len(contact.faces),
         candidate_counts=contact.count.numpy().tolist(),material=effective_material(model))
     if result['status'] or result['energy_j'] != 0.:
-        raise ValueError('초기 교차/거리 오류 또는 평면 rest barrier 활성화: '+json.dumps(result))
+        raise ValueError('초기 교차/거리 오류 또는 초기 상태 barrier 활성화: '+json.dumps(result))
     return result
 
 
 def execute_shape(root,shape,action):
     cfg = verify(root); gpu_environment_matches(cfg)
+    damping_rate = cfg.get('diagnostic_frame_damping_s_inv',0.)
+    damping_options = {'frame_velocity_damping_s_inv':damping_rate} if damping_rate else {}
     dest = root/shape/('outputs' if action == 'run' else 'checks/'+action)
     dest.mkdir(parents=True,exist_ok=False)
     report = dict(status='running',action=action,shape=shape,backend='gpu_resident',all_stages_gpu=True,
@@ -248,19 +279,19 @@ def execute_shape(root,shape,action):
         report['initial_contact'] = initial_contact(root,shape,cfg)
         if action == 'smoke':
             for phase in ('preload','wind'):
-                state = simulation(root,dest/phase,shape,phase,cfg,None,smoke=True)
+                state = simulation(root,dest/phase,shape,phase,cfg,None,smoke=True,**damping_options)
                 report['phases'][phase] = read(dest/phase/'report.json')['status']
                 if state is None: raise ValueError('GPU smoke 승인 실패: '+phase)
-            report['scope'] = '각각 rest에서 시작한 중력/최대풍 64단계 프레임; 전체 궤적·실접촉 검증 아님'
+            report['scope'] = '각각 동결 초기 상태에서 시작한 중력/최대풍 프레임; 전체 궤적·실접촉 검증 아님'
         elif action == 'run':
-            preload = simulation(root,dest/'preload',shape,'preload',cfg,None)
+            preload = simulation(root,dest/'preload',shape,'preload',cfg,None,**damping_options)
             report['phases']['preload'] = read(dest/'preload/report.json')['status']
             if preload is None: raise ValueError('GPU preload 실패; calm/wind를 시작하지 않습니다')
             state = preload
             for phase in ('calm','wind'):
                 # v12는 연속 전달, 이전 bundle은 독립 분기 계약을 유지한다.
                 initial = state if cfg.get('trajectory_mode') == 'serial' else preload
-                state = simulation(root,dest/phase,shape,phase,cfg,initial.copy())
+                state = simulation(root,dest/phase,shape,phase,cfg,initial.copy(),**damping_options)
                 report['phases'][phase] = read(dest/phase/'report.json')['status']
                 if state is None: raise ValueError('GPU phase 승인 실패: '+phase)
             report['full_trajectory_verified'] = True

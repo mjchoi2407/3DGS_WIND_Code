@@ -113,7 +113,8 @@ def test_frame_progress_marks_overlapping_solver_and_collision_times():
     assert '= solver' not in line and '계측보정 ×0.9400' in line and 'GMRES 누적 123' in line
 
 
-def test_simulation_preserves_gpu_recovery_and_discarded_evidence(tmp_path,monkeypatch):
+@pytest.mark.parametrize('bending',[False,True])
+def test_simulation_preserves_gpu_recovery_and_discarded_evidence(tmp_path,monkeypatch,bending):
     import warp as wp
     from wind3dgs.teacher import resident_contact_retry as frame_module
     shape,phase='reference_rectangle','wind';root=tmp_path/'bundle';source=root/shape/phase
@@ -138,7 +139,7 @@ def test_simulation_preserves_gpu_recovery_and_discarded_evidence(tmp_path,monke
         def __init__(self,model,state,wind,gravity,*,policy,**kwargs):
             self.state=np.array(state,copy=True);self.policy=policy;self.solver=SimpleNamespace(held=Held())
             self.swept_capacity=kwargs.get('swept_capacity')
-            self.retry_newton_limit=kwargs.get('retry_newton_limit')
+            self.retry_newton_limit=kwargs.get('retry_newton_limit');self.options=kwargs
             self.graph_inventory=self.step_graph_inventory=self.audit_graph_inventory={}
             instances.append(self)
         def run_frame(self):
@@ -164,13 +165,20 @@ def test_simulation_preserves_gpu_recovery_and_discarded_evidence(tmp_path,monke
              barrier_stiffness=1000.,proxy_error_budget_m=None),geometry_refinement_depth=2,
              performance_policy='fixture',swept_candidate_capacity=2_000_000,
              retry_newton_limit=True,trajectory_mode='serial',phase_start_s={'wind':6.})
-    result=gpu.simulation(root,tmp_path/'output',shape,phase,cfg,initial)
+    options={}
+    if bending:
+        cfg.update(phase_start_s={'wind':8.},phase_time_offset_s={'wind':3.})
+        options=dict(membrane_damping_tau_s=.005,bending_damping_tau_s=.001)
+    result=gpu.simulation(root,tmp_path/'output',shape,phase,cfg,initial,**options)
     assert len(instances)==1 and instances[0].policy.linear_cycles==3
     assert instances[0].swept_capacity == 2_000_000
     assert instances[0].retry_newton_limit is True
+    if bending:
+        assert instances[0].options['membrane_damping_tau_s']==.005
+        assert instances[0].options['bending_damping_tau_s']==.001
     with np.load(tmp_path/'output/frame_0000.npz') as z:
-        assert float(z['trajectory_time_s']) == 6.+1/60
-        assert float(z['phase_time_s']) == 1/60
+        assert float(z['trajectory_time_s']) == (8. if bending else 6.)+1/60
+        assert float(z['phase_time_s']) == (3. if bending else 0.)+1/60
     np.testing.assert_array_equal(instances[0].state,initial)
     assert result is not None
     report=gpu.read(tmp_path/'output/report.json');frame=report['frames'][0]

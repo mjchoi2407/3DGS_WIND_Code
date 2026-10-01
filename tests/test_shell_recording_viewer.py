@@ -101,5 +101,49 @@ class RecordingViewerTests(unittest.TestCase):
         self.assertEqual(frame_at_time(times, 1.), 3)
 
 
+class RecordingCameraTests(unittest.TestCase):
+    @staticmethod
+    def project(points, camera, width, height):
+        pitch, yaw = np.radians([-9.,110.6])
+        front = np.array([np.cos(yaw)*np.cos(pitch),np.sin(yaw)*np.cos(pitch),np.sin(pitch)])
+        right = np.cross(front,[0.,0.,1.]);right /= np.linalg.norm(right)
+        up = np.cross(right,front)
+        d = np.asarray(points)-camera
+        depth = d@front
+        tx = np.tan(np.radians(22.5))*width/height
+        ty = np.tan(np.radians(22.5))
+        return np.c_[(1+(d@right)/(depth*tx))*width/2,(1-(d@up)/(depth*ty))*height/2],depth
+
+    def test_both_recordings_fit_outside_sidebar_at_resized_and_hidpi_windows(self):
+        from wind3dgs.evaluation.view_shell_recording import fit_recording_camera
+        # 실제2초 표시 범위를 바탕으로 한 회귀 fixture. 과거 고정 카메라는 좁은 창에서 왼쪽을 가렸다.
+        bounds = np.array([[[-1.55,-.37,.52],[-.42,.45,1.75]],[[-.07,-.40,.51],[.96,.45,1.75]]])
+        original = bounds.copy()
+        points = np.array([[x,y,z] for lo,hi in bounds for x in (lo[0],hi[0]) for y in (lo[1],hi[1]) for z in (lo[2],hi[2])])
+        for width,height,sidebar in [(1280,800,300),(960,800,300),(1280,800,450),(900,700,300),(640,480,300)]:
+            with self.subTest(width=width,height=height,sidebar=sidebar):
+                camera,_ = fit_recording_camera(bounds,width,height,sidebar)
+                screen,depth = self.project(points,camera,width,height)
+                self.assertTrue(np.all(depth>.1))
+                self.assertGreaterEqual(screen[:,0].min(),sidebar+20.)
+                self.assertLessEqual(screen[:,0].max(),width-20.)
+                self.assertGreaterEqual(screen[:,1].min(),20.)
+                self.assertLessEqual(screen[:,1].max(),height-20.)
+        np.testing.assert_array_equal(bounds,original)
+
+    def test_single_and_three_recordings_fit_without_ui_or_geometry_rescale(self):
+        from wind3dgs.evaluation.view_shell_recording import fit_recording_camera
+        for n in (1,3):
+            bounds=np.array([[[2*i,-1.,-.5],[2*i+1.,1.,1.5]] for i in range(n)])
+            camera,_=fit_recording_camera(bounds,1280,800,0.)
+            points=np.array([[x,y,z] for lo,hi in bounds for x in (lo[0],hi[0]) for y in (lo[1],hi[1]) for z in (lo[2],hi[2])])
+            screen,depth=self.project(points,camera,1280,800)
+            self.assertTrue(np.all(depth>0))
+            self.assertGreater(screen[:,0].min(),0)
+            self.assertLess(screen[:,0].max(),1280)
+            self.assertGreater(screen[:,1].min(),0)
+            self.assertLess(screen[:,1].max(),800)
+
+
 if __name__ == '__main__':
     unittest.main()

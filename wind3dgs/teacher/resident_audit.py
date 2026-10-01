@@ -119,6 +119,7 @@ class ResidentAudit:
         self.rhs = zeros(len(ids)); self.a0 = zeros(len(ids)); self.initial_force = zeros(self.n)
         self.a1,self.ma,self.vpair,self.mv0,self.mv1 = [zeros(self.n,wp.vec2d) for _ in range(5)]
         self.energy = zeros(4)
+        self.dissipation = zeros(steps)
         self.terms = zeros((2*self.n,7),wp.vec2d); self.term_scratch = zeros((2*self.n,7),wp.vec2d)
         self.maxima = zeros((2*self.n,3)); self.max_scratch = zeros((2*self.n,3))
         self.history = zeros((steps,6)); self.history_scratch = zeros((steps,6)); self.flags = zeros(steps,wp.int32)
@@ -138,9 +139,15 @@ class ResidentAudit:
 
     def _mass(self,x,y): self.launch(k.mass_pair,[self.mass.row,self.mass.col,self.mass.values,x,y],self.n)
 
+    def _evaluate_state(self,state):
+        if hasattr(self.force,'evaluate_state'):
+            return self.force.evaluate_state(*(self.vec(a) for a in state))
+        return self.force.evaluate(self.vec(state[0]),self.vec(state[1]))
+
     def _initialize(self):
         self.launch(k.load_state,[self.data,self.index,0,*self.state0],self.n)
-        f,d,s = self.force.evaluate(self.vec(self.state0[0]),self.vec(self.state0[1]))
+        f,d,s = self._evaluate_state(self.state0)
+        if getattr(self.force,'damping',None) is not None: self.force.damping.keep_power()
         wp.copy(self.initial_force,self.flat(f)); self.energy.zero_()
         self.launch(k.keep_energy,[d,s,self.energy,0])
 
@@ -163,13 +170,15 @@ class ResidentAudit:
         self._mass(self.a1,self.ma)
         for state,target in ((self.state0,self.mv0),(self.state1,self.mv1)):
             self.launch(k.pack_pair,[*state[2:],self.vpair],self.n); self._mass(self.vpair,target)
-        f,d,s = self.force.evaluate(self.vec(self.state1[0]),self.vec(self.state1[1]))
+        f,d,s = self._evaluate_state(self.state1)
+        if getattr(self.force,'damping',None) is not None:
+            self.force.damping.finish_audit(self.index,self.dissipation,self.dt)
         self.launch(k.keep_energy,[d,s,self.energy,1])
         self.launch(k.physics_terms,[*self.state0,*self.state1,self.a0,self.a1,self.ma,self.mv0,self.mv1,self.flat(f),self.held,self.index,self.substeps,self.free_index,wp.float64(self.dt),self.terms,self.maxima],self.n)
         total = self.reduce(self.terms,self.term_scratch,self.n,7,k.reduce_pair)
         maxima = self.reduce(self.maxima,self.max_scratch,self.n,3,k.reduce_max)
         bounds = self.bounds.evaluate(*self.state0,*self.state1[:2],self.dt)
-        self.launch(k.finish_physics,[total,maxima,bounds,self.energy,self.balances,self.index,wp.float64(self.policy.force_atol_n),wp.float64(self.policy.force_rtol),self.history,self.flags,self.geometry_mode])
+        self.launch(k.finish_physics,[total,maxima,bounds,self.energy,self.balances,self.dissipation,self.index,wp.float64(self.policy.force_atol_n),wp.float64(self.policy.force_rtol),self.history,self.flags,self.geometry_mode])
         wp.copy(self.initial_force,self.flat(f)); self.launch(k.keep_energy,[d,s,self.energy,0])
         self.launch(k.check_times,[self.times,self.reference_times if self.compare_reference else self.times,self.index,wp.float64(self.dt),self.time_status])
         for kind in range(2 if self.compare_reference else 0):

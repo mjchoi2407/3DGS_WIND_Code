@@ -23,8 +23,17 @@ class ResidentContactRetryFrame:
     분기·rollback·외력 재사용·half128 적분·검산·상태 채택 모두 GPU에 남는다.
     재시도 실패는 더 세분하지 않고 원래 프레임 시작 상태를 보존한다.
     """
-    def __init__(self,model,initial,wind,gravity,*,dt=1/3840,steps=64,retry_newton_limit=False,**kwargs):
+    def __init__(self,model,initial,wind,gravity,*,dt=1/3840,steps=64,retry_newton_limit=False,frame_velocity_damping_s_inv=0.,**kwargs):
         if type(retry_newton_limit) is not bool: raise ValueError('Newton 한도 재시도 옵션은 bool이어야 합니다')
+        from .membrane_damping import validate_tau
+        tau = validate_tau(kwargs.get('membrane_damping_tau_s',0.))
+        bend = validate_tau(kwargs.get('bending_damping_tau_s',0.))
+        from .diagnostic_damping import combined_allowed
+        if (tau or bend) and frame_velocity_damping_s_inv and not combined_allowed():
+            raise ValueError('내부 감쇠 진단은 전역 감쇠0 필요; 조합은 별도 실험 opt-in 필요')
+        from .resident_frame_damping import damping_factor
+        damping_factor(frame_velocity_damping_s_inv,dt*steps)
+        self.damping=None
         self.retry_newton_limit=retry_newton_limit
         self.base=None;self.half=None;self.graph=None
         self.allowed=wp.zeros(1,dtype=wp.int32,device='cuda:0')
@@ -35,15 +44,24 @@ class ResidentContactRetryFrame:
             # 바깥 hook은 두 프레임과 새 조건부 body 모두를 추적한다.
             with track_conditional_bodies() as bodies:
                 self.base=ResidentContactFrame(model,initial,wind,gravity,dt=dt,steps=steps,**kwargs)
-                self.half=ResidentContactFrame(model,initial,wind[:1],gravity[:1],dt=dt/2,steps=steps*2,
-                    held_force_source=self.base.solver.held,**kwargs)
+                # half는 base가 계산한 외력을 복사하므로 독립 바람 strategy를 만들지 않는다.
+                from .diagnostic_wind import local_wind_experiment
+                with local_wind_experiment():
+                    self.half=ResidentContactFrame(model,initial,wind[:1],gravity[:1],dt=dt/2,steps=steps*2,
+                        held_force_source=self.base.solver.held,**kwargs)
+                if frame_velocity_damping_s_inv:
+                    from .resident_frame_damping import FrameVelocityDamping
+                    self.damping=FrameVelocityDamping(model,self.base.solver.state,self.base.audit.mass,
+                        rate=frame_velocity_damping_s_inv,frame_dt=dt*steps)
                 with wp.ScopedCapture(device='cuda:0') as captured:
                     self.base.solver.failure.zero_()
-                    self.base._submit_frame()
-                    wp.launch(allow_half_retry,dim=1,inputs=[self.base.solver.failure,
-                        self.base.first_failure.info,self.base.audit.flags,self.base.audit.time_status,
-                        self.allowed,int(self.retry_newton_limit)],device='cuda:0')
-                    wp.capture_if(self.allowed,self._retry)
+                    self.allowed.zero_()
+                    if self.damping is None:
+                        self._advance()
+                    else:
+                        self.damping.apply()
+                        wp.capture_if(self.damping.ready,self._advance)
+                        self.damping.finish(self.base,self.half,self.allowed)
                 self.graph=captured.graph
             self.graph_inventory=device_graph_inventory(self.graph,conditional_bodies=bodies)
             self.step_graph_inventory=self.base.step_graph_inventory
@@ -53,6 +71,13 @@ class ResidentContactRetryFrame:
         except Exception:
             self.close()
             raise
+
+    def _advance(self):
+        self.base._submit_frame()
+        wp.launch(allow_half_retry,dim=1,inputs=[self.base.solver.failure,
+            self.base.first_failure.info,self.base.audit.flags,self.base.audit.time_status,
+            self.allowed,int(self.retry_newton_limit)],device='cuda:0')
+        wp.capture_if(self.allowed,self._retry)
 
     def _retry(self):
         for dst,src in zip(self.half.solver.state,self.base.backup):wp.copy(dst,src)
@@ -70,6 +95,10 @@ class ResidentContactRetryFrame:
         start=perf_counter()
         wp.capture_launch(self.graph);wp.synchronize_device('cuda:0')
         elapsed=perf_counter()-start
+        if self.damping is not None and self.damping.flags.numpy()[0]:
+            from .resident_frame_damping import rejected_frame
+            self.failed=True
+            return rejected_frame(self.base,elapsed,self.damping.result())
         retried=bool(self.allowed.numpy()[0])
         base_basis=self.base.timing_basis_at_boundary()
         half_basis=self.half.timing_basis_at_boundary() if retried else 0.
@@ -96,6 +125,12 @@ class ResidentContactRetryFrame:
         result['counts']=list(result['counts'])
         result['counts'][9]=result['gmres_total']
         result['all_stages_gpu']=True
+        if self.damping is not None:
+            result['frame_velocity_damping']=self.damping.result()
+            for key in ('membrane_damping','internal_damping'):
+                if key in result:
+                    result[key]['global_rate_s_inv']=self.damping.rate
+                    result[key]['global_dissipation_scope']='별도 frame_velocity_damping 장부; 내부 소산에 중복 합산하지 않음'
         self.failed=result['status']!='passed'
         if not self.failed:self.completed_frames+=1
         return result

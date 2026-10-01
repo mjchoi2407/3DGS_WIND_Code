@@ -1,4 +1,4 @@
-"""완료된 v11 셀프 접촉 P3 프레임을 기존 저장 메시 뷰어에 연결한다.
+"""완료된 v11 분기 또는 v12/v13 연속 셀프 접촉 P3 프레임을 재생한다.
 
 표시 캐시만 만들며 물리 solver 또는 GPU 접촉 계산을 실행하지 않는다.
 """
@@ -13,13 +13,16 @@ from .teacher_scene_model import build_scene_model
 from .view_shell_recording import display_faces, sha, show
 
 
-SHAPES = ('handkerchief', 'triangular_flag')
-BRANCHES = ('wind', 'calm', 'preload')
+SHAPES = ('reference_rectangle', 'handkerchief', 'triangular_flag')
+LEGACY_SHAPES = ('handkerchief', 'triangular_flag')
+PHASES = ('preload', 'calm', 'wind')
+BRANCHES = ('wind', 'calm', 'preload', 'trajectory')
 SOURCES = {
     'main': Path('experiments/artifacts/runs/p3_self_contact/three_scenes_gpu_bend500_manual_v11'),
     'sub': Path('experiments/artifacts/runs/sub_pc/20260923T074157Z-a5333af22eca4b1dadc144633bd6398a/simulation'),
 }
 DEFAULT_CACHE = Path('experiments/artifacts/runs/shell_playback/p3_self_contact_v11')
+SERIAL_CACHE = Path('experiments/artifacts/runs/shell_playback/p3_self_contact_v12')
 STATE_KEYS = ('u_hi', 'u_lo', 'v_hi', 'v_lo')
 MODEL_MODULES = (
     'teacher/p3_shell.py', 'teacher/p3_shell_samples.py', 'teacher/sample_meshes.py',
@@ -54,7 +57,10 @@ def verified_phase(root, shape, phase, manifest, manifest_hash):
     source = root/shape/phase
     prefix = f'{shape}/{phase}'
     plan = read(frozen_file(root, manifest, f'{prefix}/plan.json'))
-    for name in (f'{shape}.npz', 'wind.npz', 'forcing.npz'):
+    inputs = ('wind.npz', 'forcing.npz')
+    if shape != 'reference_rectangle':
+        inputs += (f'{shape}.npz',)
+    for name in inputs:
         frozen_file(root, manifest, f'{prefix}/inputs/{name}')
     folder = root/shape/'outputs'/phase
     path = folder/'report.json'
@@ -72,6 +78,8 @@ def verified_phase(root, shape, phase, manifest, manifest_hash):
                 or row.get('contact_status') or row.get('contact_path_status')
                 or not row.get('all_stages_gpu') or not row.get('self_collision_checked')):
             raise ValueError(f'{shape}/{phase}: 승인되지 않은 저장 프레임 {index}')
+        if sha(folder/f'frame_{index:04d}.npz') != row['state_sha256']:
+            raise ValueError(f'{shape}/{phase}: 프레임 {index} hash 불일치')
     if len(list(folder.glob('frame_[0-9][0-9][0-9][0-9].npz'))) != count:
         raise ValueError(f'{shape}/{phase}: 저장 프레임 파일 수 불일치')
     if not report.get('checkpoint_sha256') or sha(folder/'checkpoint.npz') != report['checkpoint_sha256']:
@@ -83,29 +91,49 @@ def verified_phase(root, shape, phase, manifest, manifest_hash):
 
 def prepare(run, cache, shape, branch='wind'):
     if shape not in SHAPES or branch not in BRANCHES:
-        raise ValueError('완료된 손수건·삼각형의 preload/calm/wind만 표시합니다')
-    suite = read(run/'suite.json')
-    if (suite.get('schema') != 'p3_gpu_contact_three_scenes_v11'
-            or suite.get('backend') != 'gpu_resident' or shape not in suite.get('shapes', [])):
-        raise ValueError('v11 GPU 셀프 접촉 동결 묶음이 아닙니다')
+        raise ValueError('지원하지 않는 씬 또는 표시 구간입니다')
     manifest_path = run/'manifest.json'
     manifest_hash = sha(manifest_path)
     manifest = read(manifest_path)
+    suite = read(frozen_file(run, manifest, 'suite.json'))
+    serial = suite.get('schema') in ('p3_gpu_contact_three_scenes_v12', 'p3_gpu_contact_three_scenes_v13')
+    if (suite.get('schema') not in ('p3_gpu_contact_three_scenes_v11', 'p3_gpu_contact_three_scenes_v12', 'p3_gpu_contact_three_scenes_v13')
+            or suite.get('backend') != 'gpu_resident' or shape not in suite.get('shapes', [])
+            or (serial and suite.get('trajectory_mode') != 'serial')):
+        raise ValueError('v11 분기 또는 v12/v13 연속 GPU 셀프 접촉 동결 묶음이 아닙니다')
+    if branch == 'trajectory' and not serial:
+        raise ValueError('trajectory는 v12/v13 연속 묶음에서만 표시합니다')
     shape_report_path = run/shape/'outputs/report.json'
     shape_report = read(shape_report_path)
     if (shape_report.get('status') != 'complete' or not shape_report.get('full_trajectory_verified')
             or shape_report.get('source_manifest_sha256') != manifest_hash
-            or any(shape_report.get('phases', {}).get(p) != 'complete' for p in ('preload','calm','wind'))):
+            or any(shape_report.get('phases', {}).get(p) != 'complete' for p in PHASES)):
         raise ValueError(shape+': 세 phase를 완료한 GPU 결과가 아닙니다')
-    phases = ('preload',) if branch == 'preload' else ('preload', branch)
+    if serial:
+        phases = PHASES if branch == 'trajectory' else PHASES[:PHASES.index(branch)+1]
+    else:
+        phases = ('preload',) if branch == 'preload' else ('preload', branch)
     checked = {phase: verified_phase(run, shape, phase, manifest, manifest_hash) for phase in phases}
     first_plan = checked['preload'][0]
-    for phase in phases[1:]:
-        plan = checked[phase][0]
-        if plan['fps'] != first_plan['fps'] or plan['material'] != first_plan['material']:
-            raise ValueError('preload와 분기 phase의 모델·fps 불일치')
-        if manifest[f'{shape}/preload/inputs/{shape}.npz'] != manifest[f'{shape}/{phase}/inputs/{shape}.npz']:
-            raise ValueError('preload와 분기 phase의 rest 입력 불일치')
+    phase_windows = []
+    elapsed = 0.
+    for phase in phases:
+        plan, report, _ = checked[phase]
+        if (plan['fps'] != first_plan['fps'] or plan['material'] != first_plan['material']
+                or plan.get('reference_rectangle_resolution') != first_plan.get('reference_rectangle_resolution')):
+            raise ValueError('구간 사이 모델·fps 불일치')
+        if shape != 'reference_rectangle':
+            if manifest[f'{shape}/preload/inputs/{shape}.npz'] != manifest[f'{shape}/{phase}/inputs/{shape}.npz']:
+                raise ValueError('구간 사이 rest 입력 불일치')
+        if serial and (report.get('trajectory_mode') != 'serial'
+                       or report.get('phase_start_s') != elapsed
+                       or suite.get('phase_start_s', {}).get(phase) != elapsed):
+            raise ValueError('연속 궤적의 구간 시작 시각 불일치')
+        end = elapsed+plan['frames']/plan['fps']
+        phase_windows.append(dict(phase=phase,start_s=elapsed,end_s=end))
+        elapsed = end
+    if serial and phases == PHASES and abs(elapsed-suite.get('trajectory_duration_s', -1)) > 1e-8:
+        raise ValueError('연속 궤적 전체 길이 불일치')
 
     package = Path(__file__).resolve().parents[1]
     for name in MODEL_MODULES:
@@ -117,7 +145,8 @@ def prepare(run, cache, shape, branch='wind'):
                 'source_shape_report_sha256': sha(shape_report_path),
                 'source_phase_report_sha256': {phase: checked[phase][2] for phase in phases},
                 'viewer_adapter_sha256': sha(__file__),
-                'viewer_renderer_sha256': sha(Path(__file__).with_name('view_shell_recording.py'))}
+                'viewer_renderer_sha256': sha(Path(__file__).with_name('view_shell_recording.py')),
+                'trajectory_mode': 'serial' if serial else 'branched', 'phase_windows': phase_windows}
     destination = cache/shape
     if (destination/'manifest.json').exists():
         info = read(destination/'manifest.json')
@@ -138,12 +167,13 @@ def prepare(run, cache, shape, branch='wind'):
     max_error = 0.
     previous = None
     output_index = 0
-    for phase in phases:
+    for window in phase_windows:
+        phase = window['phase']
         plan, report, report_hash = checked[phase]
         folder = run/shape/'outputs'/phase
         initial = state(folder/'initial_state.npz', nodes, report['initial_state_sha256'])
-        if previous is not None and any(not np.array_equal(a,b) for a,b in zip(initial,previous)):
-            raise ValueError('preload checkpoint와 분기 초기 상태 불일치')
+        if previous is not None and any(a.tobytes() != b.tobytes() for a,b in zip(initial,previous)):
+            raise ValueError('이전 구간 checkpoint와 다음 초기 raw hi/lo 상태 불일치')
         if output_index == 0:
             exact = model.rest_positions.astype(np.longdouble)
             exact += initial[0].astype(np.longdouble)+initial[1].astype(np.longdouble)
@@ -156,6 +186,9 @@ def prepare(run, cache, shape, branch='wind'):
             with np.load(path, allow_pickle=False) as z:
                 hi, lo = z['u_hi'], z['u_lo']
                 wind, timestamp = z['wind_m_s'], float(z['phase_time_s'])
+                trajectory_time = float(z['trajectory_time_s']) if serial else window['start_s']+timestamp
+                if not np.isfinite(trajectory_time) or abs(trajectory_time-window['start_s']-(index+1)/fps) > 1e-8:
+                    raise ValueError(f'{shape}/{phase}: 전체 궤적 시각 불일치')
                 if (hi.dtype != np.float64 or lo.dtype != np.float64
                         or hi.shape != (nodes,3) or lo.shape != (nodes,3)
                         or wind.shape != (3,) or not np.isfinite(hi).all()
@@ -183,7 +216,7 @@ def prepare(run, cache, shape, branch='wind'):
     info = dict(identity, source_run=str(run.resolve()),shape=shape,branch=branch,
                 frames=count,fps=fps,preload_frames=checked['preload'][0]['frames'],
                 max_display_rounding_error_m=max_error,
-                scope='완료된 v11 preload→분기 60Hz 경계의 P3 표시 메시. 물리 재계산·3DGS 아님',
+                scope=('v12/v13 연속' if serial else 'v11 분기')+' 60Hz 경계의 P3 표시 메시. 물리 재계산·3DGS 아님',
                 files={name:sha(destination/name) for name in ('positions.npy','geometry.npz')})
     (destination/'manifest.json').write_text(json.dumps(info,ensure_ascii=False,indent=2)+'\n')
     print(f'{shape}: {branch} 표시 캐시 {count}프레임 검증·준비 완료 ({destination})',flush=True)
@@ -193,9 +226,9 @@ def prepare(run, cache, shape, branch='wind'):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source',choices=tuple(SOURCES),default='main')
-    parser.add_argument('--run',type=Path,help='기본 메인/서브 결과 대신 사용할 완료 v11 묶음')
+    parser.add_argument('--run',type=Path,help='완료된 v11 분기 또는 v12/v13 연속 묶음')
     parser.add_argument('--cache',type=Path,help='새 표시 캐시 루트; 기존 캐시는 덮어쓰지 않음')
-    parser.add_argument('--shape',choices=('both',*SHAPES),default='both')
+    parser.add_argument('--shape',choices=('both','all',*SHAPES),default='both')
     parser.add_argument('--phase',choices=BRANCHES,default='wind')
     parser.add_argument('--prepare-only',action='store_true')
     parser.add_argument('--smoke-frames',type=int,default=0)
@@ -204,8 +237,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     run = args.run if args.run is not None else SOURCES[args.source]
     source_id = args.source if args.run is None else hashlib.sha256(str(run.resolve()).encode()).hexdigest()[:12]
-    cache = args.cache if args.cache is not None else DEFAULT_CACHE/source_id/args.phase
-    shapes = SHAPES if args.shape == 'both' else (args.shape,)
+    serial = read(run/'suite.json').get('trajectory_mode') == 'serial'
+    # 어댑터 갱신으로 기존 사용자 캐시를 무효화하거나 덮어쓰지 않는다.
+    version = hashlib.sha256((sha(__file__)+sha(Path(__file__).with_name('view_shell_recording.py'))).encode()).hexdigest()[:12]
+    cache_root = SERIAL_CACHE if serial else DEFAULT_CACHE
+    cache = args.cache if args.cache is not None else cache_root/source_id/args.phase/version
+    shapes = SHAPES if args.shape == 'all' else LEGACY_SHAPES if args.shape == 'both' else (args.shape,)
     paths = [prepare(run,cache,shape,args.phase) for shape in shapes]
     if not args.prepare_only:
         show(paths,args)

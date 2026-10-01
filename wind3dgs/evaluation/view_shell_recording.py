@@ -157,6 +157,38 @@ def prepare(run, cache, shape, allow_partial=False):
     return destination
 
 
+def fit_recording_camera(bounds, width, height, sidebar_px=0., fov_deg=45., padding_px=24.):
+    """저장 궤적의 전체 범위를 UI 오른쪽 표시 영역 안에 맞춘다. 물리 좌표/축척은 유지한다."""
+    bounds = np.asarray(bounds, dtype=np.float64)
+    if bounds.ndim != 3 or bounds.shape[1:] != (2, 3) or not len(bounds) or not np.isfinite(bounds).all():
+        raise ValueError('유효한 표시 bounds 필요')
+    if np.any(bounds[:, 0] > bounds[:, 1]) or width <= 0 or height <= 0 or not 0 < fov_deg < 180:
+        raise ValueError('표시 bounds/창 크기/FOV 오류')
+    sidebar = min(max(0., float(sidebar_px)), max(0., width-1.))
+    pad = min(max(0., float(padding_px)), .1*min(width-sidebar, height))
+    low, high = bounds[:, 0].min(0), bounds[:, 1].max(0)
+    center = (low+high)/2
+    corners = np.array([[x,y,z] for x in (low[0],high[0]) for y in (low[1],high[1]) for z in (low[2],high[2])])
+    pitch, yaw = np.radians([-9., 110.6])
+    front = np.array([np.cos(yaw)*np.cos(pitch), np.sin(yaw)*np.cos(pitch), np.sin(pitch)])
+    right = np.cross(front, [0.,0.,1.]); right /= np.linalg.norm(right)
+    up = np.cross(right, front)
+    q = corners-center
+    qx, qy, qz = q@right, q@up, q@front
+    ty = np.tan(np.radians(fov_deg)/2); tx = ty*width/height
+    left, right_edge = 2*(sidebar+pad)/width-1, 1-2*pad/width
+    bottom, top = -1+2*pad/height, 1-2*pad/height
+    mid = (left+right_edge)/2
+    # 원근 투영의 네 화면 경계 조건을 카메라 거리로 푼다.
+    distance = max(.5, float(-qz.min()+.1),
+                   float(np.max((qx-right_edge*tx*qz)/((right_edge-mid)*tx))),
+                   float(np.max((left*tx*qz-qx)/((mid-left)*tx))),
+                   float(np.max((qy-top*ty*qz)/(top*ty))),
+                   float(np.max((bottom*ty*qz-qy)/(-bottom*ty))))*1.01
+    camera = center-front*distance-right*(mid*tx*distance)
+    return camera, center
+
+
 def show(paths, args):
     import warp as wp
     from wind3dgs.teacher.view_sample_cloth import SampleClothViewerGL
@@ -166,32 +198,68 @@ def show(paths, args):
     labels = [readable_shape(json.loads((path/'manifest.json').read_text()).get('shape',path.name))
               for path in paths]
     datasets = []
+    display_bounds = []
+    offsets = None
+    if len(paths) > 2:
+        bounds = []
+        for path in paths:
+            recorded = np.load(path/'positions.npy', mmap_mode='r')
+            bounds.append((recorded.min(axis=(0,1)), recorded.max(axis=(0,1))))
+        widths = [float(hi[0]-lo[0]) for lo,hi in bounds]
+        cursor = -(sum(widths)+.45*(len(paths)-1))/2
+        offsets = []
+        for (lo,hi),width in zip(bounds,widths):
+            offsets.append(np.array([cursor-lo[0],0.,1.25],dtype=np.float32))
+            cursor += width+.45
     for index, path in enumerate(paths):
         p = np.load(path/'positions.npy', mmap_mode='r')
         with np.load(path/'geometry.npz') as z:
             rest, faces, pins, times = z['rest'], z['faces'], z['pinned'], z['times']
         offset = np.array([(index-(len(paths)-1)/2)*1.45, 0, 1.25], dtype=np.float32)
         offset[0] -= (rest[:,0].min()+rest[:,0].max())/2
+        if offsets is not None:
+            offset = offsets[index]
+        display_bounds.append((p.min(axis=(0,1))+offset, p.max(axis=(0,1))+offset))
         uv = rest[:,[0,2]].copy()
         uv = (uv-uv.min(axis=0))/np.maximum(np.ptp(uv,axis=0),1e-6)
         yy, xx = np.indices((256,256))
         check = ((xx//24+yy//24)%2).astype(bool)
         texture = np.empty((256,256,3), dtype=np.uint8)
-        texture[:] = (55,144,205) if index == 0 else (230,147,55)
+        texture[:] = ((55,144,205),(230,147,55),(65,175,120))[index%3]
         texture[check] = (220,230,235)
         datasets.append(dict(p=p, rest=rest, pins=pins, times=times, offset=offset,
                              indices=wp.array(faces.ravel(),dtype=wp.int32,device=viewer.device),
                              pin_colors=wp.array(np.tile([1.,.15,.12],(int(pins.sum()),1)),
                                                  dtype=wp.vec3,device=viewer.device),
                              uv=wp.array(uv,dtype=wp.vec2,device=viewer.device), texture=texture))
-    center = np.array([0.,0.,1.25])
+    center = np.zeros(3)
+    fitted_viewport = None
+    def fit_view(force=False):
+        nonlocal center, fitted_viewport
+        width, height = viewer.renderer.window.get_framebuffer_size()
+        if width <= 0 or height <= 0:
+            return
+        sidebar = viewer._sidebar_width_fb_px() if viewer.gui is not None else 0.
+        viewport = (width, height, sidebar)
+        if force or viewport != fitted_viewport:
+            camera, center = fit_recording_camera(display_bounds, width, height, sidebar, viewer.camera.fov)
+            viewer.set_camera(wp.vec3(*camera), -9., 110.6)
+            viewer._camera_dirty = True
+            fitted_viewport = viewport
     viewer.set_cloth_orbit_pivot_provider(lambda:center)
-    viewer.set_camera(wp.vec3(1.2,-3.2,1.8), -9., 110.6)
+    fit_view()
+    windows = json.loads((paths[0]/'manifest.json').read_text()).get('phase_windows', [])
     duration = min(float(d['times'][-1]) for d in datasets)
     state = {'time': min(max(args.time,0.),duration), 'speed':1., 'loop':True, 'pins':True}
     def gui(ui):
-        ui.text('Saved simulation playback (no solver)')
-        ui.text('Left: '+labels[0]+' | Right: '+labels[1] if len(paths)==2 else labels[0])
+        ui.text(f'Loaded recordings: {len(datasets)}')
+        if ui.button('Fit all recordings'):
+            fit_view(force=True)
+        for index,label in enumerate(labels):
+            ui.text(f'{index+1}: {label}')
+        if windows:
+            active = next((w for w in windows if state['time'] < w['end_s']), windows[-1])
+            ui.text(f"Phase: {active['phase']} ({active['start_s']:g}-{active['end_s']:g}s)")
         _, state['time'] = ui.slider_float('Time (s)',state['time'],0.,duration)
         _, state['speed'] = ui.slider_float('Playback speed',state['speed'],.1,2.)
         _, state['loop'] = ui.checkbox('Loop',state['loop'])
@@ -204,6 +272,7 @@ def show(paths, args):
     rendered = 0
     try:
         while viewer.is_running():
+            fit_view()
             now = time.perf_counter()
             elapsed = min(now-last,.1)
             last = now
